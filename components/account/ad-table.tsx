@@ -137,73 +137,69 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
 
     const allMetrics = [{ id: "name", name: "Ad Name" }, ...activeMetrics];
     
-    // Group cells by column and row to detect full column/row selections
-    const columnGroups = new Map<number, number>();
-    const rowGroups = new Map<number, number>();
-    selectedCells.forEach(cell => {
-      columnGroups.set(cell.col, (columnGroups.get(cell.col) || 0) + 1);
-      rowGroups.set(cell.row, (rowGroups.get(cell.row) || 0) + 1);
-    });
-
-    // Get unique selected columns and rows
-    const selectedColumns = Array.from(new Set(selectedCells.map(cell => cell.col)));
+    // Get unique selected rows and columns
     const selectedRows = Array.from(new Set(selectedCells.map(cell => cell.row)));
+    const selectedColumns = Array.from(new Set(selectedCells.map(cell => cell.col)));
 
-    // Create combined selection data
-    const selectedMetrics = selectedColumns.map(colIndex => allMetrics[colIndex]);
-    const selectedAds = selectedRows.map(rowIndex => filteredData[rowIndex]);
-
-    // Create values array with all selected data points
-    const values = selectedAds.flatMap(ad =>
-      selectedMetrics.map(metric => ({
+    // Single cell selection
+    if (selectedRows.length === 1 && selectedColumns.length === 1) {
+      const ad = filteredData[selectedRows[0]];
+      const metric = allMetrics[selectedColumns[0]];
+      onSelectionChange({
+        type: "cell",
         adId: ad.id,
         adName: ad.name,
         metricId: metric.id,
         metricName: metric.name,
         value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
-      }))
-    );
+      });
+      return;
+    }
 
-    // Determine selection type and create appropriate response
-    let selectionData: SelectedRange;
+    // Row selection takes precedence if we have multiple rows
+    if (selectedRows.length > 1) {
+      const selectedAds = selectedRows.map(rowIndex => filteredData[rowIndex]);
+      const selectedMetrics = selectedColumns.map(colIndex => allMetrics[colIndex]);
+      
+      const values = selectedAds.flatMap(ad =>
+        selectedMetrics.map(metric => ({
+          adId: ad.id,
+          adName: ad.name,
+          metricId: metric.id,
+          metricName: metric.name,
+          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
+        }))
+      );
 
-    if (selectedColumns.length > 1 && selectedRows.length > 1) {
-      // Both multiple columns and rows selected
-      selectionData = {
-        type: "column",
-        metricId: selectedMetrics[0].id,
-        metricName: selectedMetrics.map(m => m.name).join(", "),
-        values,
-      };
-    } else if (selectedColumns.length > 1) {
-      // Multiple columns selected
-      selectionData = {
-        type: "column",
-        metricId: selectedMetrics[0].id,
-        metricName: selectedMetrics.map(m => m.name).join(", "),
-        values,
-      };
-    } else if (selectedRows.length > 1) {
-      // Multiple rows selected
-      selectionData = {
+      onSelectionChange({
         type: "row",
         adId: selectedAds[0].id,
         adName: selectedAds.map(ad => ad.name).join(", "),
         values,
-      };
-    } else {
-      // Single cell or small selection
-      selectionData = {
-        type: "cell",
-        adId: selectedAds[0].id,
-        adName: selectedAds[0].name,
-        metricId: selectedMetrics[0].id,
-        metricName: selectedMetrics[0].name,
-        value: values[0].value,
-      };
+      });
+      return;
     }
 
-    onSelectionChange(selectionData);
+    // Column selection
+    if (selectedColumns.length >= 1) {
+      const selectedMetrics = selectedColumns.map(colIndex => allMetrics[colIndex]);
+      const values = selectedMetrics.flatMap(metric =>
+        filteredData.map(ad => ({
+          adId: ad.id,
+          adName: ad.name,
+          metricId: metric.id,
+          metricName: metric.name,
+          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
+        }))
+      );
+
+      onSelectionChange({
+        type: "column",
+        metricId: selectedMetrics[0].id,
+        metricName: selectedMetrics.map(m => m.name).join(", "),
+        values,
+      });
+    }
   };
 
   // Handle analyze button click
