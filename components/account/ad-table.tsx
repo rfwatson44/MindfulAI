@@ -145,96 +145,61 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       rowGroups.set(cell.row, (rowGroups.get(cell.row) || 0) + 1);
     });
 
-    // Check for full column selections
-    const fullColumns = Array.from(columnGroups.entries())
-      .filter(([_, count]) => count === filteredData.length)
-      .map(([col]) => col);
+    // Get unique selected columns and rows
+    const selectedColumns = Array.from(new Set(selectedCells.map(cell => cell.col)));
+    const selectedRows = Array.from(new Set(selectedCells.map(cell => cell.row)));
 
-    // Check for full row selections
-    const fullRows = Array.from(rowGroups.entries())
-      .filter(([_, count]) => count === allMetrics.length)
-      .map(([row]) => row);
+    // Create combined selection data
+    const selectedMetrics = selectedColumns.map(colIndex => allMetrics[colIndex]);
+    const selectedAds = selectedRows.map(rowIndex => filteredData[rowIndex]);
 
-    // Create selection data based on what's selected
+    // Create values array with all selected data points
+    const values = selectedAds.flatMap(ad =>
+      selectedMetrics.map(metric => ({
+        adId: ad.id,
+        adName: ad.name,
+        metricId: metric.id,
+        metricName: metric.name,
+        value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
+      }))
+    );
+
+    // Determine selection type and create appropriate response
     let selectionData: SelectedRange;
 
-    if (fullColumns.length > 0 && fullRows.length > 0) {
-      // Both columns and rows are selected
-      const selectedRows = fullRows.map(rowIndex => filteredData[rowIndex]);
-      const selectedMetrics = fullColumns.map(colIndex => allMetrics[colIndex]);
-      
-      const values = selectedRows.flatMap(ad =>
-        selectedMetrics.map(metric => ({
-          adId: ad.id,
-          adName: ad.name,
-          metricId: metric.id,
-          metricName: metric.name,
-          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
-        }))
-      );
-
-      selectionData = {
-        type: "row",
-        adId: selectedRows[0].id,
-        adName: selectedRows.map(ad => ad.name).join(", "),
-        values,
-      };
-    } else if (fullColumns.length > 0) {
-      // Column selection
-      const metrics = fullColumns.map(colIndex => allMetrics[colIndex]);
-      const values = metrics.flatMap(metric => 
-        filteredData.map(ad => ({
-          adId: ad.id,
-          adName: ad.name,
-          metricId: metric.id,
-          metricName: metric.name,
-          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
-        }))
-      );
-      
+    if (selectedColumns.length > 1 && selectedRows.length > 1) {
+      // Both multiple columns and rows selected
       selectionData = {
         type: "column",
-        metricId: metrics[0].id,
-        metricName: metrics.map(m => m.name).join(", "),
+        metricId: selectedMetrics[0].id,
+        metricName: selectedMetrics.map(m => m.name).join(", "),
         values,
       };
-    } else if (fullRows.length > 0) {
-      // Row selection
-      const ads = fullRows.map(rowIndex => filteredData[rowIndex]);
-      const values = ads.flatMap(ad =>
-        allMetrics.map(metric => ({
-          adId: ad.id,
-          adName: ad.name,
-          metricId: metric.id,
-          metricName: metric.name,
-          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
-        }))
-      );
-      
+    } else if (selectedColumns.length > 1) {
+      // Multiple columns selected
+      selectionData = {
+        type: "column",
+        metricId: selectedMetrics[0].id,
+        metricName: selectedMetrics.map(m => m.name).join(", "),
+        values,
+      };
+    } else if (selectedRows.length > 1) {
+      // Multiple rows selected
       selectionData = {
         type: "row",
-        adId: ads[0].id,
-        adName: ads.map(ad => ad.name).join(", "),
+        adId: selectedAds[0].id,
+        adName: selectedAds.map(ad => ad.name).join(", "),
         values,
       };
     } else {
-      // Individual cell selection
-      const selections = selectedCells.map(cell => {
-        const ad = filteredData[cell.row];
-        const metric = allMetrics[cell.col];
-        return {
-          adId: ad.id,
-          adName: ad.name,
-          metricId: metric.id,
-          metricName: metric.name,
-          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
-        };
-      });
-      
+      // Single cell or small selection
       selectionData = {
         type: "cell",
-        ...selections[0],
-        additionalSelections: selections.slice(1),
+        adId: selectedAds[0].id,
+        adName: selectedAds[0].name,
+        metricId: selectedMetrics[0].id,
+        metricName: selectedMetrics[0].name,
+        value: values[0].value,
       };
     }
 
