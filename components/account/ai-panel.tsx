@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { X, Sparkles, BarChart2, Table as TableIcon, MessageSquare, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Ad, SelectedRange } from "@/lib/types";
@@ -30,6 +31,68 @@ export function AIPanel({
   const [activeAction, setActiveAction] = useState("summarize");
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
+  // Calculate selection metrics
+  const getSelectionMetrics = () => {
+    if (!selectedRange) return null;
+
+    switch (selectedRange.type) {
+      case "column": {
+        const values = selectedRange.values.map(v => Number(v.value) || 0);
+        const highest = Math.max(...values);
+        const lowest = Math.min(...values);
+        const average = values.reduce((a, b) => a + b, 0) / values.length;
+
+        return {
+          type: "column",
+          metrics: {
+            highest,
+            lowest,
+            average
+          },
+          metricName: selectedRange.metricName,
+          count: selectedRange.values.length / adsData.length // Number of columns
+        };
+      }
+      case "row": {
+        const spendValues = selectedRange.values.filter(v => v.metricId === "spend").map(v => Number(v.value) || 0);
+        const conversionValues = selectedRange.values.filter(v => v.metricId === "conversions").map(v => Number(v.value) || 0);
+        
+        const totalSpend = spendValues.reduce((a, b) => a + b, 0);
+        const totalConversions = conversionValues.reduce((a, b) => a + b, 0);
+        const avgCostPerConversion = totalConversions > 0 ? totalSpend / totalConversions : 0;
+
+        return {
+          type: "row",
+          metrics: {
+            totalSpend,
+            totalConversions,
+            avgCostPerConversion
+          },
+          count: selectedRange.values.length / Object.keys(adsData[0] || {}).length // Number of rows
+        };
+      }
+      case "cell": {
+        return {
+          type: "cell",
+          count: 1 + (selectedRange.additionalSelections?.length || 0)
+        };
+      }
+      default:
+        return null;
+    }
+  };
+
+  const selectionMetrics = getSelectionMetrics();
+
+  // Format numbers for display
+  const formatNumber = (value: number, type: string) => {
+    if (type === "currency") return `$${value.toFixed(2)}`;
+    if (type === "percent") return `${value.toFixed(2)}%`;
+    if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
+    if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
+    return value.toFixed(2);
+  };
+
   return (
     <Sheet open={isOpen} onOpenChange={onToggle}>
       <SheetContent 
@@ -45,6 +108,71 @@ export function AIPanel({
           </div>
           
           <div className="p-4">
+            {/* Selection Counter */}
+            {selectedRange && (
+              <div className="mb-4 rounded-lg border bg-muted/30 p-4">
+                <h4 className="mb-2 font-medium">Selection Summary</h4>
+                <div className="text-sm text-muted-foreground">
+                  {selectionMetrics?.type === "column" && (
+                    <>Selected {selectionMetrics.count} column{selectionMetrics.count > 1 ? 's' : ''} ({selectionMetrics.metricName})</>
+                  )}
+                  {selectionMetrics?.type === "row" && (
+                    <>Selected {selectionMetrics.count} row{selectionMetrics.count > 1 ? 's' : ''}</>
+                  )}
+                  {selectionMetrics?.type === "cell" && (
+                    <>Selected {selectionMetrics.count} cell{selectionMetrics.count > 1 ? 's' : ''}</>
+                  )}
+                </div>
+
+                {/* Metric Summary Blocks */}
+                {selectionMetrics?.type === "column" && (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-md bg-white p-3 shadow-sm">
+                      <div className="text-xs text-muted-foreground">Highest</div>
+                      <div className="text-lg font-semibold">
+                        {formatNumber(selectionMetrics.metrics.highest, selectedRange.metricId === "spend" ? "currency" : "number")}
+                      </div>
+                    </div>
+                    <div className="rounded-md bg-white p-3 shadow-sm">
+                      <div className="text-xs text-muted-foreground">Lowest</div>
+                      <div className="text-lg font-semibold">
+                        {formatNumber(selectionMetrics.metrics.lowest, selectedRange.metricId === "spend" ? "currency" : "number")}
+                      </div>
+                    </div>
+                    <div className="rounded-md bg-white p-3 shadow-sm">
+                      <div className="text-xs text-muted-foreground">Average</div>
+                      <div className="text-lg font-semibold">
+                        {formatNumber(selectionMetrics.metrics.average, selectedRange.metricId === "spend" ? "currency" : "number")}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {selectionMetrics?.type === "row" && (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-md bg-white p-3 shadow-sm">
+                      <div className="text-xs text-muted-foreground">Total Spend</div>
+                      <div className="text-lg font-semibold">
+                        {formatNumber(selectionMetrics.metrics.totalSpend, "currency")}
+                      </div>
+                    </div>
+                    <div className="rounded-md bg-white p-3 shadow-sm">
+                      <div className="text-xs text-muted-foreground">Total Conversions</div>
+                      <div className="text-lg font-semibold">
+                        {selectionMetrics.metrics.totalConversions}
+                      </div>
+                    </div>
+                    <div className="rounded-md bg-white p-3 shadow-sm">
+                      <div className="text-xs text-muted-foreground">Avg. Cost per Conversion</div>
+                      <div className="text-lg font-semibold">
+                        {formatNumber(selectionMetrics.metrics.avgCostPerConversion, "currency")}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <SelectionSummary 
               selectedRange={selectedRange} 
               isDetailsOpen={isDetailsOpen}
@@ -569,22 +697,4 @@ function getColumnDistribution(selection: SelectedRange): string {
   
   const values = selection.values
     .map(v => Number(v.value) || 0)
-    .filter(v => !isNaN(v));
-  
-  if (!values.length) return "No valid numeric data available.";
-  
-  const total = values.reduce((a, b) => a + b, 0);
-  const avg = total / values.length;
-  const metricName = selection.metricName.toLowerCase();
-  
-  // Count values in different ranges
-  const belowAvg = values.filter(v => v < avg * 0.75).length;
-  const nearAvg = values.filter(v => v >= avg * 0.75 && v <= avg * 1.25).length;
-  const aboveAvg = values.filter(v => v > avg * 1.25).length;
-  
-  const belowPct = Math.round((belowAvg / values.length) * 100);
-  const nearPct = Math.round((nearAvg / values.length) * 100);
-  const abovePct = Math.round((aboveAvg / values.length) * 100);
-  
-  return `${abovePct}% of ads have above-average ${metricName}, ${nearPct}% are near average, and ${belowPct}% are below average.`;
-}
+    .filter(v => !isN
