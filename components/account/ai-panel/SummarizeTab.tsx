@@ -85,14 +85,14 @@ function ColumnSummary({ metric, values, metricId }: { metric: string; values: a
   );
 }
 
-function RowSummary({ values }: { values: any[] }) {
+function RowSummary({ adName, values }: { adName: string; values: any[] }) {
   const spend = values.find(v => v.metricId === "spend")?.value || 0;
   const conversions = values.find(v => v.metricId === "conversions")?.value || 0;
   const costPerConversion = spend / (conversions || 1);
 
   return (
-    <div className="space-y-2">
-      <div className="text-sm font-medium text-gray-700">Performance Metrics</div>
+    <div className="space-y-2 mb-4 last:mb-0">
+      <h3 className="text-sm font-medium text-gray-700">{adName}</h3>
       <div className="flex gap-2">
         <MetricSummaryCard label="Spend" value={formatValue(spend, "spend")} />
         <MetricSummaryCard label="Conversions" value={formatValue(conversions, "conversions")} />
@@ -129,9 +129,17 @@ export default function SummarizeTab({ selectedRange, adsData }: { selectedRange
   }
 
   if (selectedRange.type === "row") {
+    const adNames = selectedRange.adName.split(", ");
+    const valuesPerAd = adNames.map(adName => ({
+      adName,
+      values: selectedRange.values.filter(v => v.adName === adName)
+    }));
+
     return (
       <div className="p-4">
-        <RowSummary values={selectedRange.values} />
+        {valuesPerAd.map((item, index) => (
+          <RowSummary key={index} adName={item.adName} values={item.values} />
+        ))}
       </div>
     );
   }
