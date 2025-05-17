@@ -227,109 +227,111 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         </div>
       </div>
       
-      <div className="relative flex-1 overflow-auto">
-        <div className="min-w-full">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-muted/50 hover:bg-muted">
-                {/* Row header (empty corner) */}
-                <TableHead className="sticky left-0 z-20 w-12 bg-muted/50 p-0">
-                  <div className="flex h-full w-full items-center justify-center border-r border-border">
-                    #
-                  </div>
-                </TableHead>
-                
-                {/* Ad preview/name column */}
-                <TableHead
-                  className="sticky left-12 z-20 w-64 cursor-pointer bg-muted/50 p-2 font-medium hover:bg-muted/80"
-                  onClick={(e) => handleHeaderClick(0, e)}
-                >
-                  <div className="flex items-center justify-between">
-                    <span>Ad</span>
-                  </div>
-                </TableHead>
-                
-                {/* Metric columns */}
-                {activeMetrics.map((metric, index) => (
-                  <TableHead
-                    key={metric.id}
-                    className={cn(
-                      "cursor-pointer whitespace-nowrap p-2 font-medium hover:bg-muted/80",
-                      isNumericMetric(metric.id) ? "text-center" : ""
-                    )}
-                    style={{ width: "150px" }}
-                    onClick={(e) => handleHeaderClick(index + 1, e)}
-                  >
-                    <div className={cn(
-                      "flex items-center",
-                      isNumericMetric(metric.id) ? "justify-center" : "justify-between"
-                    )}>
-                      <span>{metric.name}</span>
+      <div className="relative flex-1 overflow-hidden">
+        <div className="h-full overflow-auto">
+          <div className="min-w-[800px]">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/50 hover:bg-muted">
+                  {/* Row header (empty corner) */}
+                  <TableHead className="sticky left-0 z-20 w-12 bg-muted/50 p-0">
+                    <div className="flex h-full w-full items-center justify-center border-r border-border">
+                      #
                     </div>
                   </TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredData.map((ad, rowIndex) => (
-                <TableRow
-                  key={ad.id}
-                  className="group hover:bg-muted/50"
-                >
-                  {/* Row header */}
-                  <TableCell
-                    className="sticky left-0 z-10 cursor-pointer bg-muted/50 p-0 text-center font-medium text-muted-foreground group-hover:bg-muted/50"
-                    onClick={(e) => handleRowHeaderClick(rowIndex, e)}
-                  >
-                    <div className="flex h-full w-full items-center justify-center border-r border-border">
-                      {rowIndex + 1}
-                    </div>
-                  </TableCell>
                   
-                  {/* Ad preview/name */}
-                  <TableCell
-                    className={cn(
-                      "sticky left-12 z-10 h-16 bg-background p-2 group-hover:bg-muted/50",
-                      isCellSelected(rowIndex, 0) ? "bg-primary/10" : ""
-                    )}
-                    onClick={(e) => handleCellClick(rowIndex, 0, e)}
+                  {/* Ad preview/name column */}
+                  <TableHead
+                    className="sticky left-12 z-20 w-64 cursor-pointer bg-muted/50 p-2 font-medium hover:bg-muted/80"
+                    onClick={(e) => handleHeaderClick(0, e)}
                   >
-                    <div className="flex items-center gap-3">
-                      <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded border border-border bg-muted">
-                        {ad.previewUrl ? (
-                          <img
-                            src={ad.previewUrl}
-                            alt={ad.name}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
-                            No preview
-                          </div>
-                        )}
-                      </div>
-                      <div className="truncate font-medium">{ad.name}</div>
+                    <div className="flex items-center justify-between">
+                      <span>Ad</span>
                     </div>
-                  </TableCell>
+                  </TableHead>
                   
-                  {/* Metric cells */}
-                  {activeMetrics.map((metric, colIndex) => (
-                    <TableCell
+                  {/* Metric columns */}
+                  {activeMetrics.map((metric, index) => (
+                    <TableHead
                       key={metric.id}
                       className={cn(
-                        "cursor-pointer p-2",
-                        isNumericMetric(metric.id) ? "text-center" : "text-right",
-                        isCellSelected(rowIndex, colIndex + 1) ? "bg-primary/10" : ""
+                        "cursor-pointer whitespace-nowrap p-2 font-medium hover:bg-muted/80",
+                        isNumericMetric(metric.id) ? "text-center" : ""
                       )}
-                      onClick={(e) => handleCellClick(rowIndex, colIndex + 1, e)}
+                      style={{ width: "150px" }}
+                      onClick={(e) => handleHeaderClick(index + 1, e)}
                     >
-                      {formatValue(ad[metric.id as keyof Ad], metric.id)}
-                    </TableCell>
+                      <div className={cn(
+                        "flex items-center",
+                        isNumericMetric(metric.id) ? "justify-center" : "justify-between"
+                      )}>
+                        <span>{metric.name}</span>
+                      </div>
+                    </TableHead>
                   ))}
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {filteredData.map((ad, rowIndex) => (
+                  <TableRow
+                    key={ad.id}
+                    className="group hover:bg-muted/50"
+                  >
+                    {/* Row header */}
+                    <TableCell
+                      className="sticky left-0 z-10 cursor-pointer bg-muted/50 p-0 text-center font-medium text-muted-foreground group-hover:bg-muted/50"
+                      onClick={(e) => handleRowHeaderClick(rowIndex, e)}
+                    >
+                      <div className="flex h-full w-full items-center justify-center border-r border-border">
+                        {rowIndex + 1}
+                      </div>
+                    </TableCell>
+                    
+                    {/* Ad preview/name */}
+                    <TableCell
+                      className={cn(
+                        "sticky left-12 z-10 h-16 bg-background p-2 group-hover:bg-muted/50",
+                        isCellSelected(rowIndex, 0) ? "bg-primary/10" : ""
+                      )}
+                      onClick={(e) => handleCellClick(rowIndex, 0, e)}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded border border-border bg-muted">
+                          {ad.previewUrl ? (
+                            <img
+                              src={ad.previewUrl}
+                              alt={ad.name}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
+                              No preview
+                            </div>
+                          )}
+                        </div>
+                        <div className="truncate font-medium">{ad.name}</div>
+                      </div>
+                    </TableCell>
+                    
+                    {/* Metric cells */}
+                    {activeMetrics.map((metric, colIndex) => (
+                      <TableCell
+                        key={metric.id}
+                        className={cn(
+                          "cursor-pointer p-2",
+                          isNumericMetric(metric.id) ? "text-center" : "text-right",
+                          isCellSelected(rowIndex, colIndex + 1) ? "bg-primary/10" : ""
+                        )}
+                        onClick={(e) => handleCellClick(rowIndex, colIndex + 1, e)}
+                      >
+                        {formatValue(ad[metric.id as keyof Ad], metric.id)}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         </div>
 
         {/* Floating Analyze Button */}
