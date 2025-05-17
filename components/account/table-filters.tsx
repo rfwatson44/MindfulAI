@@ -12,18 +12,11 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Ad, AdType, FilterState } from "@/lib/types";
+import { Slider } from "@/components/ui/slider";
 
 interface TableFiltersProps {
   data: Ad[];
@@ -93,14 +86,6 @@ export function TableFilters({ data, onFiltersChange }: TableFiltersProps) {
     setSearchValue(e.target.value);
   };
   
-  // Handle ad type filter change
-  const handleAdTypeChange = (value: string) => {
-    setFilters({
-      ...filters,
-      adType: value === "all" ? null : (value as AdType),
-    });
-  };
-  
   // Handle spend range filter change
   const handleSpendRangeChange = (values: number[]) => {
     setFilters({
@@ -145,101 +130,85 @@ export function TableFilters({ data, onFiltersChange }: TableFiltersProps) {
         />
       </div>
       
-      <div className="flex items-center gap-2">
-        <Select
-          value={filters.adType || "all"}
-          onValueChange={handleAdTypeChange}
-        >
-          <SelectTrigger className="w-[100px]">
-            <SelectValue placeholder="Ad Type" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Types</SelectItem>
-            <SelectItem value="static">Static</SelectItem>
-            <SelectItem value="video">Video</SelectItem>
-          </SelectContent>
-        </Select>
-        
-        <Sheet>
-          <SheetTrigger asChild>
-            <Button variant="outline" size="icon" className="h-9 w-9">
-              <SlidersHorizontal className="h-4 w-4" />
-              {activeFilterCount > 0 && (
-                <Badge variant="secondary" className="absolute -right-1 -top-1 h-4 w-4 p-0 text-xs">
-                  {activeFilterCount}
-                </Badge>
-              )}
-            </Button>
-          </SheetTrigger>
-          <SheetContent>
-            <SheetHeader>
-              <SheetTitle>Filter Options</SheetTitle>
-              <SheetDescription>
-                Refine the ad performance data view
-              </SheetDescription>
-            </SheetHeader>
-            
-            <div className="mt-6 space-y-6">
-              <div className="space-y-2">
-                <Label htmlFor="spend-range">Amount Spent Range</Label>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">
-                    ${filters.minSpend.toLocaleString()}
-                  </span>
-                  <span className="text-sm text-muted-foreground">
-                    ${filters.maxSpend.toLocaleString()}
-                  </span>
-                </div>
-                <Slider
-                  id="spend-range"
-                  defaultValue={[filters.minSpend, filters.maxSpend]}
-                  min={0}
-                  max={maxDataSpend}
-                  step={100}
-                  onValueChange={handleSpendRangeChange}
-                />
+      <Sheet>
+        <SheetTrigger asChild>
+          <Button variant="outline" size="icon" className="h-9 w-9">
+            <SlidersHorizontal className="h-4 w-4" />
+            {activeFilterCount > 0 && (
+              <Badge variant="secondary" className="absolute -right-1 -top-1 h-4 w-4 p-0 text-xs">
+                {activeFilterCount}
+              </Badge>
+            )}
+          </Button>
+        </SheetTrigger>
+        <SheetContent>
+          <SheetHeader>
+            <SheetTitle>Filter Options</SheetTitle>
+            <SheetDescription>
+              Refine the ad performance data view
+            </SheetDescription>
+          </SheetHeader>
+          
+          <div className="mt-6 space-y-6">
+            <div className="space-y-2">
+              <Label htmlFor="spend-range">Amount Spent Range</Label>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">
+                  ${filters.minSpend.toLocaleString()}
+                </span>
+                <span className="text-sm text-muted-foreground">
+                  ${filters.maxSpend.toLocaleString()}
+                </span>
               </div>
-              
-              <div className="space-y-2">
-                <Label>Campaigns</Label>
-                <div className="max-h-48 space-y-2 overflow-y-auto">
-                  {allCampaigns.map((campaign) => (
-                    <div
-                      key={campaign}
-                      className="flex items-center space-x-2"
-                    >
-                      <Checkbox
-                        id={`campaign-${campaign}`}
-                        checked={filters.campaigns.includes(campaign)}
-                        onCheckedChange={(checked) =>
-                          handleCampaignChange(
-                            campaign,
-                            checked as boolean
-                          )
-                        }
-                      />
-                      <label
-                        htmlFor={`campaign-${campaign}`}
-                        className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                      >
-                        {campaign}
-                      </label>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              
-              <Button
-                variant="secondary"
-                onClick={resetFilters}
-                className="w-full"
-              >
-                Reset Filters
-              </Button>
+              <Slider
+                id="spend-range"
+                defaultValue={[filters.minSpend, filters.maxSpend]}
+                min={0}
+                max={maxDataSpend}
+                step={100}
+                onValueChange={handleSpendRangeChange}
+              />
             </div>
-          </SheetContent>
-        </Sheet>
-      </div>
+            
+            <div className="space-y-2">
+              <Label>Campaigns</Label>
+              <div className="max-h-48 space-y-2 overflow-y-auto">
+                {allCampaigns.map((campaign) => (
+                  <div
+                    key={campaign}
+                    className="flex items-center space-x-2"
+                  >
+                    <Checkbox
+                      id={`campaign-${campaign}`}
+                      checked={filters.campaigns.includes(campaign)}
+                      onCheckedChange={(checked) =>
+                        handleCampaignChange(
+                          campaign,
+                          checked as boolean
+                        )
+                      }
+                    />
+                    <label
+                      htmlFor={`campaign-${campaign}`}
+                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                    >
+                      {campaign}
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            <Button
+              variant="secondary"
+              onClick={resetFilters}
+              className="w-full"
+            >
+              Reset Filters
+            </Button>
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
