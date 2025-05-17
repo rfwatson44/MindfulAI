@@ -85,6 +85,23 @@ function ColumnSummary({ metric, values, metricId }: { metric: string; values: a
   );
 }
 
+function RowSummary({ values }: { values: any[] }) {
+  const spend = values.find(v => v.metricId === "spend")?.value || 0;
+  const conversions = values.find(v => v.metricId === "conversions")?.value || 0;
+  const costPerConversion = spend / (conversions || 1);
+
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium text-gray-700">Performance Metrics</div>
+      <div className="flex gap-2">
+        <MetricSummaryCard label="Spend" value={formatValue(spend, "spend")} />
+        <MetricSummaryCard label="Conversions" value={formatValue(conversions, "conversions")} />
+        <MetricSummaryCard label="Cost/Conv." value={formatValue(costPerConversion, "costPerResult")} />
+      </div>
+    </div>
+  );
+}
+
 export default function SummarizeTab({ selectedRange, adsData }: { selectedRange: SelectedRange | null; adsData: Ad[] }) {
   if (!selectedRange) {
     return (
@@ -111,36 +128,25 @@ export default function SummarizeTab({ selectedRange, adsData }: { selectedRange
     );
   }
 
+  if (selectedRange.type === "row") {
+    return (
+      <div className="p-4">
+        <RowSummary values={selectedRange.values} />
+      </div>
+    );
+  }
+
   return (
     <div className="p-4">
-      {selectedRange.type === "cell" && (
-        <div className="rounded bg-gray-50 px-3 py-2">
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-500">{(selectedRange as any).metricName}</span>
-            <span className="text-sm font-medium">{formatValue((selectedRange as any).value, (selectedRange as any).metricId)}</span>
-          </div>
-          <div className="text-xs text-gray-500 mt-1">
-            {getPerformanceText(selectedRange, adsData)}
-          </div>
+      <div className="rounded bg-gray-50 px-3 py-2">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-gray-500">{(selectedRange as any).metricName}</span>
+          <span className="text-sm font-medium">{formatValue((selectedRange as any).value, (selectedRange as any).metricId)}</span>
         </div>
-      )}
-      {selectedRange.type === "row" && (() => {
-        const values = (selectedRange as any).values?.map((v: any) => Number(v.value)).filter((v: number) => !isNaN(v)) || [];
-        if (!values.length) return <div className="text-sm">No numeric data</div>;
-        const avg = values.reduce((a: number, b: number) => a + b, 0) / values.length;
-        const max = Math.max(...values);
-        const min = Math.min(...values);
-        return (
-          <div className="space-y-2">
-            <div className="text-sm font-medium text-gray-700">Row metrics</div>
-            <div className="flex gap-2">
-              <MetricSummaryCard label="Average" value={formatValue(avg, undefined)} />
-              <MetricSummaryCard label="Highest" value={formatValue(max, undefined)} />
-              <MetricSummaryCard label="Lowest" value={formatValue(min, undefined)} />
-            </div>
-          </div>
-        );
-      })()}
+        <div className="text-xs text-gray-500 mt-1">
+          {getPerformanceText(selectedRange, adsData)}
+        </div>
+      </div>
     </div>
   );
 }
