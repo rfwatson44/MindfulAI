@@ -19,33 +19,6 @@ function formatValue(value: any, metricId: string | undefined): string {
   return String(value).includes(".") ? Number(value).toFixed(2) : Number(value).toLocaleString();
 }
 
-function getPerformanceText(selection: SelectedRange, adsData: Ad[]): string {
-  if (selection.type !== "cell" || !adsData.length) return "comparable";
-  try {
-    const metricId = (selection as any).metricId;
-    const value = Number((selection as any).value);
-    if (isNaN(value)) return "not directly comparable";
-    const allValues = adsData
-      .map((ad: any) => Number(ad[metricId as keyof Ad]))
-      .filter((v: any) => !isNaN(v));
-    if (!allValues.length) return "the only available data point";
-    const sorted = [...allValues].sort((a, b) => b - a);
-    const rank = sorted.indexOf(value) + 1;
-    const percentile = Math.round((rank / allValues.length) * 100);
-    const higherIsBetter = !["cpa", "costPerResult"].includes(metricId);
-    if (percentile <= 25) {
-      return higherIsBetter ? "in the top 25% (performing very well)" : "in the bottom 25% (performing very well)";
-    } else if (percentile <= 50) {
-      return higherIsBetter ? "above average" : "below average (which is good)";
-    } else if (percentile <= 75) {
-      return higherIsBetter ? "below average" : "above average (which is not ideal)";
-    }
-    return higherIsBetter ? "in the bottom 25% (underperforming)" : "in the top 25% (underperforming)";
-  } catch (error) {
-    return "difficult to compare";
-  }
-}
-
 function getColumnStats(values: any[]) {
   const numericValues = values
     .map((v: any) => Number(v.value))
@@ -112,49 +85,53 @@ export default function SummarizeTab({ selectedRange, adsData }: { selectedRange
     );
   }
 
-  if (selectedRange.type === "column") {
-    const metrics = selectedRange.metricName.split(", ");
-    return (
-      <div className="p-4">
-        {metrics.map((metric, index) => (
-          <ColumnSummary
-            key={index}
-            metric={metric}
-            values={selectedRange.values.filter(v => v.metricName === metric)}
-            metricId={selectedRange.metricId}
-          />
-        ))}
-      </div>
-    );
-  }
-
-  if (selectedRange.type === "row") {
-    const adNames = selectedRange.adName.split(", ");
-    const valuesPerAd = adNames.map(adName => ({
-      adName,
-      values: selectedRange.values.filter(v => v.adName === adName)
-    }));
-
-    return (
-      <div className="p-4">
-        {valuesPerAd.map((item, index) => (
-          <RowSummary key={index} adName={item.adName} values={item.values} />
-        ))}
-      </div>
-    );
-  }
+  // Show both column and row summaries when both are selected
+  const showColumnSummary = selectedRange.type === "column";
+  const showRowSummary = selectedRange.type === "row";
+  const showCellSummary = selectedRange.type === "cell";
 
   return (
-    <div className="p-4">
-      <div className="rounded bg-gray-50 px-3 py-2">
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-gray-500">{(selectedRange as any).metricName}</span>
-          <span className="text-sm font-medium">{formatValue((selectedRange as any).value, (selectedRange as any).metricId)}</span>
+    <div className="p-4 space-y-6">
+      {showColumnSummary && (
+        <div>
+          <h2 className="text-sm font-semibold mb-3 text-gray-900">Column Analysis</h2>
+          {selectedRange.metricName.split(", ").map((metric, index) => (
+            <ColumnSummary
+              key={index}
+              metric={metric}
+              values={selectedRange.values.filter(v => v.metricName === metric)}
+              metricId={selectedRange.metricId}
+            />
+          ))}
         </div>
-        <div className="text-xs text-gray-500 mt-1">
-          {getPerformanceText(selectedRange, adsData)}
+      )}
+
+      {showRowSummary && (
+        <div>
+          <h2 className="text-sm font-semibold mb-3 text-gray-900">Row Analysis</h2>
+          {selectedRange.adName.split(", ").map((adName, index) => (
+            <RowSummary
+              key={index}
+              adName={adName}
+              values={selectedRange.values.filter(v => v.adName === adName)}
+            />
+          ))}
         </div>
-      </div>
+      )}
+
+      {showCellSummary && (
+        <div>
+          <h2 className="text-sm font-semibold mb-3 text-gray-900">Cell Analysis</h2>
+          <div className="rounded bg-gray-50 px-3 py-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-500">{(selectedRange as any).metricName}</span>
+              <span className="text-sm font-medium">
+                {formatValue((selectedRange as any).value, (selectedRange as any).metricId)}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
