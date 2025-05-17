@@ -1,5 +1,14 @@
 import { Ad, SelectedRange } from "@/lib/types";
 
+export function getColumnDistribution(selection: any): string {
+  const values = selection.values.map((v: any) => Number(v.value)).filter((v: number) => !isNaN(v));
+  if (!values.length) return "No numeric data available";
+  
+  const sum = values.reduce((a: number, b: number) => a + b, 0);
+  const percentages = values.map((v: number) => (v / sum * 100).toFixed(1) + "%");
+  return percentages.join(" / ");
+}
+
 function formatValue(value: any, metricId: string | undefined): string {
   if (value === undefined || value === null) return "--";
   if (metricId === "spend" || metricId === "cpa" || metricId === "costPerResult") {
