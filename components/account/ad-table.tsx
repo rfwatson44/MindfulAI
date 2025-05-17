@@ -1,3 +1,5 @@
+"use client";
+
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Table,
@@ -31,14 +33,10 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [startX, setStartX] = useState(0);
   const [scrollStartLeft, setScrollStartLeft] = useState(0);
-  const [scrollVelocity, setScrollVelocity] = useState(0);
-  const [lastScrollTime, setLastScrollTime] = useState(0);
-  const [scrollMomentum, setScrollMomentum] = useState(0);
   
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const scrollbarRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLDivElement>(null);
-  const animationFrameRef = useRef<number>();
 
   useEffect(() => {
     const updateTableWidth = () => {
@@ -51,122 +49,34 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     
     return () => {
       window.removeEventListener('resize', updateTableWidth);
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
     };
   }, []);
 
-  const handleScroll = (e?: WheelEvent) => {
-    if (!tableContainerRef.current) return;
+  const handleScroll = () => {
+    if (!tableContainerRef.current || !scrollbarRef.current || !thumbRef.current) return;
 
-    if (e) {
-      e.preventDefault();
-      
-      const now = Date.now();
-      const timeDelta = now - lastScrollTime;
-      const sensitivity = 2.5;
-      
-      // Calculate new velocity with smooth acceleration
-      const newVelocity = (Math.abs(e.deltaX) / timeDelta) * sensitivity;
-      const smoothedVelocity = scrollVelocity * 0.8 + newVelocity * 0.2;
-      
-      // Update momentum
-      const direction = e.deltaX > 0 ? 1 : -1;
-      const newMomentum = smoothedVelocity * direction;
-      
-      setScrollVelocity(smoothedVelocity);
-      setScrollMomentum(newMomentum);
-      setLastScrollTime(now);
-
-      // Apply smooth scrolling
-      const animate = () => {
-        if (!tableContainerRef.current) return;
-        
-        const currentScroll = tableContainerRef.current.scrollLeft;
-        const maxScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
-        const targetScroll = Math.max(0, Math.min(currentScroll + scrollMomentum, maxScroll));
-        
-        if (Math.abs(targetScroll - currentScroll) > 0.1) {
-          tableContainerRef.current.scrollLeft = currentScroll + (targetScroll - currentScroll) * 0.15;
-          setScrollMomentum(scrollMomentum * 0.95); // Decay momentum
-          animationFrameRef.current = requestAnimationFrame(animate);
-        }
-      };
-
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-      animationFrameRef.current = requestAnimationFrame(animate);
-    }
-
-    // Update custom scrollbar position
-    if (scrollbarRef.current && thumbRef.current) {
-      const { scrollLeft, scrollWidth, clientWidth } = tableContainerRef.current;
-      const scrollRatio = scrollLeft / (scrollWidth - clientWidth);
-      const scrollbarWidth = scrollbarRef.current.clientWidth;
-      const thumbWidth = thumbRef.current.clientWidth;
-      const maxScroll = scrollbarWidth - thumbWidth;
-      setScrollLeft(scrollRatio * maxScroll);
-    }
-  };
-
-  useEffect(() => {
-    const container = tableContainerRef.current;
-    if (!container) return;
-
-    const handleWheel = (e: WheelEvent) => {
-      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
-        handleScroll(e);
-      }
-    };
-
-    container.addEventListener('wheel', handleWheel, { passive: false });
-    return () => container.removeEventListener('wheel', handleWheel);
-  }, [scrollVelocity, lastScrollTime, scrollMomentum]);
-
-  const handleThumbMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-    setStartX(e.clientX);
-    setScrollStartLeft(scrollLeft);
-  };
-
-  const handleTrackClick = (e: React.MouseEvent) => {
-    if (!tableContainerRef.current || !scrollbarRef.current || e.target === thumbRef.current) return;
+    const { scrollLeft, scrollWidth, clientWidth } = tableContainerRef.current;
+    const scrollRatio = scrollLeft / (scrollWidth - clientWidth);
+    const scrollbarWidth = scrollbarRef.current.clientWidth;
+    const thumbWidth = thumbRef.current.clientWidth;
+    const maxScroll = scrollbarWidth - thumbWidth;
     
-    const scrollbarRect = scrollbarRef.current.getBoundingClientRect();
-    const clickPosition = e.clientX - scrollbarRect.left;
-    const scrollbarWidth = scrollbarRect.width;
-    const thumbWidth = 100; // Fixed thumb width
-    const halfThumbWidth = thumbWidth / 2;
-    
-    const targetScrollLeft = Math.max(0, Math.min(clickPosition - halfThumbWidth, scrollbarWidth - thumbWidth));
-    const scrollRatio = targetScrollLeft / (scrollbarWidth - thumbWidth);
-    
-    if (tableContainerRef.current) {
-      const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
-      tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
-    }
+    setScrollLeft(scrollRatio * maxScroll);
   };
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      if (!isDragging || !tableContainerRef.current || !scrollbarRef.current) return;
+      if (!isDragging || !tableContainerRef.current || !scrollbarRef.current || !thumbRef.current) return;
 
-      const scrollbarRect = scrollbarRef.current.getBoundingClientRect();
-      const scrollbarWidth = scrollbarRect.width;
-      const thumbWidth = 100; // Fixed thumb width
+      const scrollbarWidth = scrollbarRef.current.clientWidth;
+      const thumbWidth = thumbRef.current.clientWidth;
       const maxScroll = scrollbarWidth - thumbWidth;
       const delta = e.clientX - startX;
       const newScrollLeft = Math.max(0, Math.min(scrollStartLeft + delta, maxScroll));
       
-      if (tableContainerRef.current) {
-        const scrollRatio = newScrollLeft / maxScroll;
-        const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
-        tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
-      }
-      
+      const scrollRatio = newScrollLeft / maxScroll;
+      const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
+      tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
       setScrollLeft(newScrollLeft);
     };
 
@@ -184,6 +94,26 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       document.removeEventListener('mouseup', handleMouseUp);
     };
   }, [isDragging, startX, scrollStartLeft]);
+
+  const handleThumbMouseDown = (e: React.MouseEvent) => {
+    setIsDragging(true);
+    setStartX(e.clientX);
+    setScrollStartLeft(scrollLeft);
+  };
+
+  const handleTrackClick = (e: React.MouseEvent) => {
+    if (!tableContainerRef.current || !scrollbarRef.current || !thumbRef.current) return;
+    
+    const rect = scrollbarRef.current.getBoundingClientRect();
+    const clickPosition = e.clientX - rect.left;
+    const scrollbarWidth = scrollbarRef.current.clientWidth;
+    const thumbWidth = thumbRef.current.clientWidth;
+    const maxScroll = scrollbarWidth - thumbWidth;
+    const scrollRatio = clickPosition / scrollbarWidth;
+    
+    const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
+    tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
+  };
 
   useMemo(() => {
     setFilteredData(data);
@@ -376,7 +306,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       <div className="relative flex-1 overflow-hidden">
         <div 
           ref={tableContainerRef}
-          className="overflow-x-auto scrollbar-none"
+          className="h-full overflow-auto"
           onScroll={handleScroll}
           style={{ width: `${tableWidth}px` }}
         >
@@ -472,14 +402,15 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
 
         <div
           ref={scrollbarRef}
-          className="absolute bottom-0 left-0 h-2 w-full bg-muted/50"
+          className="absolute bottom-0 left-0 h-2 w-full bg-muted/50 cursor-pointer"
           onClick={handleTrackClick}
         >
           <div
             ref={thumbRef}
-            className="absolute h-full w-24 bg-muted-foreground/50 rounded hover:bg-muted-foreground/70 active:bg-muted-foreground/90 transition-all cursor-grab active:cursor-grabbing"
+            className="absolute h-full w-32 bg-muted-foreground/50 rounded hover:bg-muted-foreground/70 active:bg-muted-foreground/90 transition-colors"
             style={{
               transform: `translateX(${scrollLeft}px)`,
+              cursor: 'grab',
             }}
             onMouseDown={handleThumbMouseDown}
           />
