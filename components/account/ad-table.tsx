@@ -27,6 +27,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   const [filteredData, setFilteredData] = useState<Ad[]>(data);
   const [selectedCells, setSelectedCells] = useState<Array<{ row: number; col: number }>>([]);
   const [showAnalyzeButton, setShowAnalyzeButton] = useState(false);
+  const [selectionMode, setSelectionMode] = useState<'none' | 'cells' | 'rows' | 'columns'>('none');
 
   // Update filtered data when data changes
   useMemo(() => {
@@ -66,20 +67,20 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     event.preventDefault();
     
     if (event.metaKey || event.ctrlKey) {
-      // Toggle individual cell selection
-      const cellIndex = selectedCells.findIndex(
-        cell => cell.row === rowIndex && cell.col === colIndex
-      );
-      
-      if (cellIndex >= 0) {
-        // Remove cell if already selected
-        setSelectedCells(selectedCells.filter((_, i) => i !== cellIndex));
-      } else {
-        // Add new cell to selection
-        setSelectedCells([...selectedCells, { row: rowIndex, col: colIndex }]);
+      if (selectionMode === 'none' || selectionMode === 'cells') {
+        setSelectionMode('cells');
+        const cellIndex = selectedCells.findIndex(
+          cell => cell.row === rowIndex && cell.col === colIndex
+        );
+        
+        if (cellIndex >= 0) {
+          setSelectedCells(selectedCells.filter((_, i) => i !== cellIndex));
+        } else {
+          setSelectedCells([...selectedCells, { row: rowIndex, col: colIndex }]);
+        }
       }
     } else {
-      // Start new selection
+      setSelectionMode('cells');
       setSelectedCells([{ row: rowIndex, col: colIndex }]);
     }
     
@@ -94,15 +95,17 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     );
 
     if (event.metaKey || event.ctrlKey) {
-      // Toggle column selection
-      const isColumnSelected = selectedCells.some(cell => cell.col === colIndex);
-      if (isColumnSelected) {
-        setSelectedCells(selectedCells.filter(cell => cell.col !== colIndex));
-      } else {
-        setSelectedCells([...selectedCells, ...columnCells]);
+      if (selectionMode === 'none' || selectionMode === 'columns') {
+        setSelectionMode('columns');
+        const isColumnSelected = selectedCells.some(cell => cell.col === colIndex);
+        if (isColumnSelected) {
+          setSelectedCells(selectedCells.filter(cell => cell.col !== colIndex));
+        } else {
+          setSelectedCells([...selectedCells, ...columnCells]);
+        }
       }
     } else {
-      // Start new selection
+      setSelectionMode('columns');
       setSelectedCells(columnCells);
     }
     setShowAnalyzeButton(true);
@@ -116,15 +119,17 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     );
 
     if (event.metaKey || event.ctrlKey) {
-      // Toggle row selection
-      const isRowSelected = selectedCells.some(cell => cell.row === rowIndex);
-      if (isRowSelected) {
-        setSelectedCells(selectedCells.filter(cell => cell.row !== rowIndex));
-      } else {
-        setSelectedCells([...selectedCells, ...rowCells]);
+      if (selectionMode === 'none' || selectionMode === 'rows') {
+        setSelectionMode('rows');
+        const isRowSelected = selectedCells.some(cell => cell.row === rowIndex);
+        if (isRowSelected) {
+          setSelectedCells(selectedCells.filter(cell => cell.row !== rowIndex));
+        } else {
+          setSelectedCells([...selectedCells, ...rowCells]);
+        }
       }
     } else {
-      // Start new selection
+      setSelectionMode('rows');
       setSelectedCells(rowCells);
     }
     setShowAnalyzeButton(true);
@@ -143,13 +148,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     const uniqueRows = Array.from(new Set(selectedCells.map(cell => cell.row)));
     const uniqueCols = Array.from(new Set(selectedCells.map(cell => cell.col)));
 
-    // Check if selection represents full columns
-    const isColumnSelection = uniqueRows.length === filteredData.length;
-    
-    // Check if selection represents full rows
-    const isRowSelection = uniqueCols.length === allMetrics.length;
-
-    if (isColumnSelection) {
+    if (selectionMode === 'columns') {
       // Column selection
       const metrics = uniqueCols.map(colIndex => allMetrics[colIndex]);
       const values = metrics.flatMap(metric => 
@@ -168,7 +167,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         metricName: metrics.map(m => m.name).join(", "),
         values,
       });
-    } else if (isRowSelection) {
+    } else if (selectionMode === 'rows') {
       // Row selection
       const ads = uniqueRows.map(rowIndex => filteredData[rowIndex]);
       const values = ads.flatMap(ad =>
@@ -188,7 +187,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         values,
       });
     } else {
-      // Multiple cell selection
+      // Cell selection
       const selections = selectedCells.map(cell => {
         const ad = filteredData[cell.row];
         const metric = allMetrics[cell.col];
