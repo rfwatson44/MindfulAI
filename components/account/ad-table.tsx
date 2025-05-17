@@ -215,8 +215,8 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   };
 
   return (
-    <div className="w-full max-w-screen-xl mx-auto h-[600px] p-4 overflow-hidden rounded-lg border">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center">
+    <div className="flex h-full w-full flex-col overflow-hidden">
+      <div className="flex flex-col gap-4 border-b p-4 md:flex-row md:items-center">
         <TableFilters data={data} onFiltersChange={handleFiltersChange} />
         <div className="flex-shrink-0 md:ml-auto">
           <MetricsSelector
@@ -227,8 +227,8 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         </div>
       </div>
       
-      <div className="mt-4 h-[calc(100%-4rem)] overflow-auto">
-        <div className="min-w-[800px]">
+      <div className="relative flex-1 overflow-auto">
+        <div className="min-w-[1024px]">
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/50 hover:bg-muted">
