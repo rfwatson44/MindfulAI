@@ -27,6 +27,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   const [filteredData, setFilteredData] = useState<Ad[]>(data);
   const [selectedCells, setSelectedCells] = useState<Array<{ row: number; col: number }>>([]);
   const [showAnalyzeButton, setShowAnalyzeButton] = useState(false);
+  const [selectionStart, setSelectionStart] = useState<{ row: number; col: number } | null>(null);
 
   // Update filtered data when data changes
   useMemo(() => {
@@ -65,8 +66,12 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   ) => {
     event.preventDefault();
     
-    if (event.metaKey || event.ctrlKey) {
-      // Toggle individual cell selection
+    if (!selectionStart) {
+      // Start new selection
+      setSelectionStart({ row: rowIndex, col: colIndex });
+      setSelectedCells([{ row: rowIndex, col: colIndex }]);
+    } else if (event.metaKey || event.ctrlKey) {
+      // Add to or remove from selection
       const cellIndex = selectedCells.findIndex(
         cell => cell.row === rowIndex && cell.col === colIndex
       );
@@ -79,8 +84,20 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         setSelectedCells([...selectedCells, { row: rowIndex, col: colIndex }]);
       }
     } else {
-      // Single cell selection
-      setSelectedCells([{ row: rowIndex, col: colIndex }]);
+      // Complete selection range
+      const startRow = Math.min(selectionStart.row, rowIndex);
+      const endRow = Math.max(selectionStart.row, rowIndex);
+      const startCol = Math.min(selectionStart.col, colIndex);
+      const endCol = Math.max(selectionStart.col, colIndex);
+      
+      const newSelection = [];
+      for (let r = startRow; r <= endRow; r++) {
+        for (let c = startCol; c <= endCol; c++) {
+          newSelection.push({ row: r, col: c });
+        }
+      }
+      setSelectedCells(newSelection);
+      setSelectionStart(null);
     }
     
     setShowAnalyzeButton(true);
@@ -156,32 +173,8 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       return;
     }
 
-    // Row selection takes precedence if we have multiple rows
-    if (selectedRows.length > 1) {
-      const selectedAds = selectedRows.map(rowIndex => filteredData[rowIndex]);
-      const selectedMetrics = selectedColumns.map(colIndex => allMetrics[colIndex]);
-      
-      const values = selectedAds.flatMap(ad =>
-        selectedMetrics.map(metric => ({
-          adId: ad.id,
-          adName: ad.name,
-          metricId: metric.id,
-          metricName: metric.name,
-          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
-        }))
-      );
-
-      onSelectionChange({
-        type: "row",
-        adId: selectedAds[0].id,
-        adName: selectedAds.map(ad => ad.name).join(", "),
-        values,
-      });
-      return;
-    }
-
     // Column selection
-    if (selectedColumns.length >= 1) {
+    if (selectedRows.length === filteredData.length) {
       const selectedMetrics = selectedColumns.map(colIndex => allMetrics[colIndex]);
       const values = selectedMetrics.flatMap(metric =>
         filteredData.map(ad => ({
@@ -199,7 +192,27 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         metricName: selectedMetrics.map(m => m.name).join(", "),
         values,
       });
+      return;
     }
+
+    // Row selection
+    const selectedAds = selectedRows.map(rowIndex => filteredData[rowIndex]);
+    const values = selectedAds.flatMap(ad =>
+      allMetrics.map(metric => ({
+        adId: ad.id,
+        adName: ad.name,
+        metricId: metric.id,
+        metricName: metric.name,
+        value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
+      }))
+    );
+
+    onSelectionChange({
+      type: "row",
+      adId: selectedAds[0].id,
+      adName: selectedAds.map(ad => ad.name).join(", "),
+      values,
+    });
   };
 
   // Handle analyze button click
@@ -347,9 +360,9 @@ function formatValue(value: any, metricId: string): string {
   if (value === undefined || value === null) return "--";
   
   if (metricId === "spend" || metricId === "cpa" || metricId === "costPerResult") {
-    return `$${value.toFixed(2)}`;
+    return `$${Number(value).toFixed(2)}`;
   } else if (metricId === "ctr" || metricId === "roas") {
-    return `${value.toFixed(2)}%`;
+    return `${Number(value).toFixed(2)}%`;
   } else {
     return value.toLocaleString();
   }
