@@ -216,8 +216,8 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
-      <div className="flex flex-col gap-4 border-b p-4">
-        <div className="flex items-center gap-4">
+      <div className="border-b p-4">
+        <div className="flex items-start gap-4">
           <div className="w-[300px]">
             <TableFilters data={data} onFiltersChange={handleFiltersChange} />
           </div>
