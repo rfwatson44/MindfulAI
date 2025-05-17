@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, forwardRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -27,7 +27,7 @@ type SidebarProps = {
   className?: string;
 };
 
-export function Sidebar({ className }: SidebarProps) {
+export const Sidebar = forwardRef<HTMLDivElement, SidebarProps>(({ className }, ref) => {
   const pathname = usePathname();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
@@ -53,6 +53,7 @@ export function Sidebar({ className }: SidebarProps) {
 
       {/* Sidebar */}
       <div
+        ref={ref}
         className={cn(
           "fixed inset-y-0 left-0 z-50 w-72 border-r border-border bg-background transition-transform lg:relative lg:z-0 lg:translate-x-0",
           isSidebarOpen ? "translate-x-0" : "-translate-x-full",
@@ -143,4 +144,6 @@ export function Sidebar({ className }: SidebarProps) {
       </div>
     </>
   );
-}
+});
+
+Sidebar.displayName = "Sidebar";

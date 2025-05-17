@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import {
   Table,
   TableBody,
@@ -28,6 +28,23 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   const [selectedCells, setSelectedCells] = useState<Array<{ row: number; col: number }>>([]);
   const [showAnalyzeButton, setShowAnalyzeButton] = useState(false);
   const [selectionMode, setSelectionMode] = useState<'none' | 'cells' | 'rows' | 'columns'>('none');
+  const [tableWidth, setTableWidth] = useState<number>(0);
+  const sidebarRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const updateTableWidth = () => {
+      const sidebarWidth = sidebarRef.current?.offsetWidth || 288; // Default to 288px if ref not available
+      const newWidth = window.innerWidth - sidebarWidth - 5;
+      setTableWidth(newWidth);
+    };
+
+    updateTableWidth();
+    window.addEventListener('resize', updateTableWidth);
+    
+    return () => {
+      window.removeEventListener('resize', updateTableWidth);
+    };
+  }, []);
 
   // Update filtered data when data changes
   useMemo(() => {
@@ -232,7 +249,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       </div>
       
       <div className="relative flex-1 overflow-auto">
-        <div className="w-[calc(100vw-5px)]">
+        <div style={{ width: `${tableWidth}px` }}>
           <Table>
             <TableHeader>
               <TableRow className="border-b bg-muted/50">
