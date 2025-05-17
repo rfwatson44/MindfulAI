@@ -12,27 +12,27 @@ export function getColumnDistribution(selection: any): string {
 function formatValue(value: any, metricId: string | undefined): string {
   if (value === undefined || value === null) return "--";
   
-  // Format currency values ($xx,xxx.xx)
-  if (metricId === "spend" || metricId === "cpa" || metricId === "costPerResult" || metricId?.toLowerCase().includes("cost")) {
-    return `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }
+  // Check if the metric is related to spend or cost
+  const isMonetary = metricId?.toLowerCase().includes("spent") || 
+                    metricId?.toLowerCase().includes("cost");
   
   // Format percentages (xx.xx%)
   if (metricId === "ctr" || metricId === "roas") {
     return `${Number(value).toFixed(2)}%`;
   }
   
-  // Format averages (x,xxx.xx)
+  // Format numbers with 2 decimal places for averages
   if (metricId?.toLowerCase().includes("average")) {
     const formattedValue = Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    // Only add $ for spend-related averages
-    return metricId.toLowerCase().includes("spend") ? `$${formattedValue}` : formattedValue;
+    return isMonetary ? `$${formattedValue}` : formattedValue;
   }
   
-  // Format regular numbers (x,xxx)
-  const formattedValue = Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
-  // Only add $ for spend values
-  return metricId === "spend" ? `$${formattedValue}` : formattedValue;
+  // Format regular numbers
+  const formattedValue = isMonetary 
+    ? Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  
+  return isMonetary ? `$${formattedValue}` : formattedValue;
 }
 
 function getColumnStats(values: any[]) {
