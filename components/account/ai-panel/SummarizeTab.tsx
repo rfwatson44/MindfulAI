@@ -37,24 +37,6 @@ function getPerformanceText(selection: SelectedRange, adsData: Ad[]): string {
   }
 }
 
-export function getColumnDistribution(selection: SelectedRange): string {
-  if (selection.type !== "column") return "Select a column to see distribution.";
-  const values = (selection as any).values
-    .map((v: any) => Number(v.value) || 0)
-    .filter((v: any) => !isNaN(v));
-  if (!values.length) return "No valid numeric data available.";
-  const total = values.reduce((a: number, b: number) => a + b, 0);
-  const avg = total / values.length;
-  const metricName = (selection as any).metricName?.toLowerCase() || "metric";
-  const belowAvg = values.filter((v: number) => v < avg * 0.75).length;
-  const nearAvg = values.filter((v: number) => v >= avg * 0.75 && v <= avg * 1.25).length;
-  const aboveAvg = values.filter((v: number) => v > avg * 1.25).length;
-  const belowPct = Math.round((belowAvg / values.length) * 100);
-  const nearPct = Math.round((nearAvg / values.length) * 100);
-  const abovePct = Math.round((aboveAvg / values.length) * 100);
-  return `${abovePct}% above average, ${nearPct}% near average, ${belowPct}% below average`;
-}
-
 function getColumnStats(values: any[]) {
   const numericValues = values
     .map((v: any) => Number(v.value))
@@ -71,9 +53,9 @@ function getColumnStats(values: any[]) {
 
 function MetricSummaryCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex-1 rounded-lg bg-gray-100 p-4 flex flex-col items-center">
-      <div className="text-sm text-gray-500 mb-1">{label}</div>
-      <div className="text-xl font-bold">{value}</div>
+    <div className="flex-1 rounded bg-gray-50 px-3 py-2 flex items-center justify-between">
+      <div className="text-sm text-gray-500">{label}</div>
+      <div className="text-sm font-medium">{value}</div>
     </div>
   );
 }
@@ -83,18 +65,12 @@ function ColumnSummary({ metric, values, metricId }: { metric: string; values: a
   if (!stats) return null;
 
   return (
-    <div className="space-y-4 mb-6 last:mb-0">
-      <h3 className="font-medium text-lg">{metric}</h3>
-      <div className="flex gap-3">
+    <div className="space-y-2 mb-4 last:mb-0">
+      <h3 className="text-sm font-medium text-gray-700">{metric}</h3>
+      <div className="flex gap-2">
         <MetricSummaryCard label="Average" value={formatValue(stats.average, metricId)} />
         <MetricSummaryCard label="Highest" value={formatValue(stats.highest, metricId)} />
         <MetricSummaryCard label="Lowest" value={formatValue(stats.lowest, metricId)} />
-      </div>
-      <div className="bg-gray-50 rounded-lg p-4 text-sm">
-        <div className="font-medium mb-1">Distribution</div>
-        <div className="text-gray-600">
-          {getColumnDistribution({ type: "column", metricName: metric, values, metricId })}
-        </div>
       </div>
     </div>
   );
@@ -113,7 +89,7 @@ export default function SummarizeTab({ selectedRange, adsData }: { selectedRange
   if (selectedRange.type === "column") {
     const metrics = selectedRange.metricName.split(", ");
     return (
-      <div className="space-y-2 p-4">
+      <div className="p-4">
         {metrics.map((metric, index) => (
           <ColumnSummary
             key={index}
@@ -128,35 +104,34 @@ export default function SummarizeTab({ selectedRange, adsData }: { selectedRange
 
   return (
     <div className="p-4">
-      <div className="rounded-lg bg-gray-50 p-4">
-        {selectedRange.type === "cell" && (
-          <>
-            <div className="text-sm">
-              <b>{(selectedRange as any).metricName}:</b> {formatValue((selectedRange as any).value, (selectedRange as any).metricId)}
+      {selectedRange.type === "cell" && (
+        <div className="rounded bg-gray-50 px-3 py-2">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-500">{(selectedRange as any).metricName}</span>
+            <span className="text-sm font-medium">{formatValue((selectedRange as any).value, (selectedRange as any).metricId)}</span>
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            {getPerformanceText(selectedRange, adsData)}
+          </div>
+        </div>
+      )}
+      {selectedRange.type === "row" && (() => {
+        const values = (selectedRange as any).values?.map((v: any) => Number(v.value)).filter((v: number) => !isNaN(v)) || [];
+        if (!values.length) return <div className="text-sm">No numeric data</div>;
+        const avg = values.reduce((a: number, b: number) => a + b, 0) / values.length;
+        const max = Math.max(...values);
+        const min = Math.min(...values);
+        return (
+          <div className="space-y-2">
+            <div className="text-sm font-medium text-gray-700">Row metrics</div>
+            <div className="flex gap-2">
+              <MetricSummaryCard label="Average" value={formatValue(avg, undefined)} />
+              <MetricSummaryCard label="Highest" value={formatValue(max, undefined)} />
+              <MetricSummaryCard label="Lowest" value={formatValue(min, undefined)} />
             </div>
-            <div className="text-xs text-gray-500 mt-2">
-              Performance: {getPerformanceText(selectedRange, adsData)}
-            </div>
-          </>
-        )}
-        {selectedRange.type === "row" && (() => {
-          const values = (selectedRange as any).values?.map((v: any) => Number(v.value)).filter((v: number) => !isNaN(v)) || [];
-          if (!values.length) return <div className="text-sm">No numeric data</div>;
-          const avg = values.reduce((a: number, b: number) => a + b, 0) / values.length;
-          const max = Math.max(...values);
-          const min = Math.min(...values);
-          return (
-            <div className="space-y-2">
-              <div className="font-medium mb-2">Row metrics</div>
-              <div className="flex gap-3">
-                <MetricSummaryCard label="Average" value={formatValue(avg, undefined)} />
-                <MetricSummaryCard label="Highest" value={formatValue(max, undefined)} />
-                <MetricSummaryCard label="Lowest" value={formatValue(min, undefined)} />
-              </div>
-            </div>
-          );
-        })()}
-      </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
