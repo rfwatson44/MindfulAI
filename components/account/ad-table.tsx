@@ -33,6 +33,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [startX, setStartX] = useState(0);
   const [scrollStartLeft, setScrollStartLeft] = useState(0);
+  const [thumbWidth, setThumbWidth] = useState(100);
   
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const scrollbarRef = useRef<HTMLDivElement>(null);
@@ -41,9 +42,11 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
 
   useEffect(() => {
     const updateTableWidth = () => {
-      const sidebarWidth = sidebarRef.current?.offsetWidth || 288;
-      const newWidth = window.innerWidth - sidebarWidth - 5;
-      setTableWidth(newWidth);
+      if (sidebarRef.current) {
+        const sidebarWidth = sidebarRef.current.offsetWidth;
+        const newWidth = window.innerWidth - sidebarWidth - 5;
+        setTableWidth(newWidth);
+      }
     };
 
     updateTableWidth();
@@ -54,20 +57,32 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     };
   }, []);
 
-  // Handle scrollbar interaction
+  useEffect(() => {
+    if (tableContainerRef.current && scrollbarRef.current) {
+      const { scrollWidth, clientWidth } = tableContainerRef.current;
+      const scrollbarWidth = scrollbarRef.current.clientWidth;
+      const ratio = clientWidth / scrollWidth;
+      const newThumbWidth = Math.max(40, Math.floor(scrollbarWidth * ratio));
+      setThumbWidth(newThumbWidth);
+    }
+  }, [activeMetrics, filteredData]);
+
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      if (!isDragging || !tableContainerRef.current || !scrollbarRef.current || !thumbRef.current) return;
+      if (!isDragging || !tableContainerRef.current || !scrollbarRef.current) return;
 
-      const scrollbarWidth = scrollbarRef.current.clientWidth;
-      const thumbWidth = thumbRef.current.clientWidth;
+      const scrollbarRect = scrollbarRef.current.getBoundingClientRect();
+      const scrollbarWidth = scrollbarRect.width;
       const maxScroll = scrollbarWidth - thumbWidth;
       const delta = e.clientX - startX;
       const newScrollLeft = Math.max(0, Math.min(scrollStartLeft + delta, maxScroll));
       
-      const scrollRatio = newScrollLeft / maxScroll;
-      const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
-      tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
+      if (tableContainerRef.current) {
+        const scrollRatio = newScrollLeft / maxScroll;
+        const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
+        tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
+      }
+      
       setScrollLeft(newScrollLeft);
     };
 
@@ -84,59 +99,55 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, startX, scrollStartLeft]);
+  }, [isDragging, startX, scrollStartLeft, thumbWidth]);
 
-  // Handle table scroll
   const handleScroll = () => {
-    if (!tableContainerRef.current || !scrollbarRef.current || !thumbRef.current) return;
+    if (!tableContainerRef.current || !scrollbarRef.current) return;
 
     const { scrollLeft, scrollWidth, clientWidth } = tableContainerRef.current;
     const scrollRatio = scrollLeft / (scrollWidth - clientWidth);
     const scrollbarWidth = scrollbarRef.current.clientWidth;
-    const thumbWidth = thumbRef.current.clientWidth;
     const maxScroll = scrollbarWidth - thumbWidth;
     
     setScrollLeft(scrollRatio * maxScroll);
   };
 
-  // Handle scrollbar thumb mousedown
   const handleThumbMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
     setIsDragging(true);
     setStartX(e.clientX);
     setScrollStartLeft(scrollLeft);
   };
 
-  // Handle scrollbar track click
   const handleTrackClick = (e: React.MouseEvent) => {
-    if (!tableContainerRef.current || !scrollbarRef.current || !thumbRef.current) return;
+    if (!tableContainerRef.current || !scrollbarRef.current || e.target === thumbRef.current) return;
     
-    const rect = scrollbarRef.current.getBoundingClientRect();
-    const clickPosition = e.clientX - rect.left;
-    const scrollbarWidth = scrollbarRef.current.clientWidth;
-    const thumbWidth = thumbRef.current.clientWidth;
-    const maxScroll = scrollbarWidth - thumbWidth;
-    const scrollRatio = clickPosition / scrollbarWidth;
+    const scrollbarRect = scrollbarRef.current.getBoundingClientRect();
+    const clickPosition = e.clientX - scrollbarRect.left;
+    const scrollbarWidth = scrollbarRect.width;
+    const halfThumbWidth = thumbWidth / 2;
     
-    const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
-    tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
+    const targetScrollLeft = Math.max(0, Math.min(clickPosition - halfThumbWidth, scrollbarWidth - thumbWidth));
+    const scrollRatio = targetScrollLeft / (scrollbarWidth - thumbWidth);
+    
+    if (tableContainerRef.current) {
+      const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
+      tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
+    }
   };
 
-  // Update filtered data when data changes
   useMemo(() => {
     setFilteredData(data);
   }, [data]);
 
-  // Helper function to determine if a metric is numeric
   const isNumericMetric = (metricId: string): boolean => {
     return metricId !== "name";
   };
 
-  // Helper function to check if a cell is selected
   const isCellSelected = (rowIndex: number, colIndex: number): boolean => {
     return selectedCells.some(cell => cell.row === rowIndex && cell.col === colIndex);
   };
 
-  // Handle metric selection
   const handleMetricToggle = (metric: Metric) => {
     if (activeMetrics.some((m) => m.id === metric.id)) {
       setActiveMetrics(activeMetrics.filter((m) => m.id !== metric.id));
@@ -145,12 +156,10 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     }
   };
 
-  // Handle filters
   const handleFiltersChange = (filtered: Ad[]) => {
     setFilteredData(filtered);
   };
 
-  // Handle cell selection
   const handleCellClick = (
     rowIndex: number,
     colIndex: number,
@@ -179,7 +188,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     setShowAnalyzeButton(true);
   };
 
-  // Handle header click (select column)
   const handleHeaderClick = (colIndex: number, event: React.MouseEvent) => {
     const columnCells = Array.from(
       { length: filteredData.length },
@@ -203,7 +211,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     setShowAnalyzeButton(true);
   };
 
-  // Handle row header click (select row)
   const handleRowHeaderClick = (rowIndex: number, event: React.MouseEvent) => {
     const rowCells = Array.from(
       { length: activeMetrics.length + 1 },
@@ -227,7 +234,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     setShowAnalyzeButton(true);
   };
 
-  // Update selection range for AI panel
   const updateSelectionRange = () => {
     if (selectedCells.length === 0) {
       onSelectionChange(null);
@@ -236,12 +242,10 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
 
     const allMetrics = [{ id: "name", name: "Ad Name" }, ...activeMetrics];
     
-    // Get unique rows and columns
     const uniqueRows = Array.from(new Set(selectedCells.map(cell => cell.row)));
     const uniqueCols = Array.from(new Set(selectedCells.map(cell => cell.col)));
 
     if (selectionMode === 'columns') {
-      // Column selection
       const metrics = uniqueCols.map(colIndex => allMetrics[colIndex]);
       const values = metrics.flatMap(metric => 
         filteredData.map(ad => ({
@@ -260,7 +264,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         values,
       });
     } else if (selectionMode === 'rows') {
-      // Row selection
       const ads = uniqueRows.map(rowIndex => filteredData[rowIndex]);
       const values = ads.flatMap(ad =>
         allMetrics.map(metric => ({
@@ -279,7 +282,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         values,
       });
     } else {
-      // Cell selection
       const selections = selectedCells.map(cell => {
         const ad = filteredData[cell.row];
         const metric = allMetrics[cell.col];
@@ -300,7 +302,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     }
   };
 
-  // Handle analyze button click
   const handleAnalyzeClick = () => {
     updateSelectionRange();
     setShowAnalyzeButton(false);
@@ -326,21 +327,19 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       <div className="relative flex-1 overflow-hidden">
         <div 
           ref={tableContainerRef}
-          className="overflow-x-auto"
+          className="overflow-x-auto scrollbar-none"
           onScroll={handleScroll}
           style={{ width: `${tableWidth}px` }}
         >
           <Table>
             <TableHeader>
               <TableRow className="border-b bg-muted/50">
-                {/* Row header (empty corner) */}
                 <TableHead className="sticky left-0 top-0 z-20 w-12 bg-muted/50 p-0">
                   <div className="flex h-full w-full items-center justify-center border-r border-border">
                     #
                   </div>
                 </TableHead>
                 
-                {/* Ad preview/name column */}
                 <TableHead
                   className="sticky left-12 top-0 z-20 w-64 cursor-pointer bg-muted/50 p-3 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted/80"
                   onClick={(e) => handleHeaderClick(0, e)}
@@ -348,7 +347,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                   <span>Ad</span>
                 </TableHead>
                 
-                {/* Metric columns */}
                 {activeMetrics.map((metric, index) => (
                   <TableHead
                     key={metric.id}
@@ -370,7 +368,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                   key={ad.id}
                   className="group hover:bg-muted/50"
                 >
-                  {/* Row header */}
                   <TableCell
                     className="sticky left-0 z-10 cursor-pointer bg-muted/50 p-0 text-center font-medium text-muted-foreground group-hover:bg-muted/50"
                     onClick={(e) => handleRowHeaderClick(rowIndex, e)}
@@ -380,7 +377,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                     </div>
                   </TableCell>
                   
-                  {/* Ad preview/name */}
                   <TableCell
                     className={cn(
                       "sticky left-12 z-10 h-16 bg-background p-2 group-hover:bg-muted/50",
@@ -406,7 +402,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                     </div>
                   </TableCell>
                   
-                  {/* Metric cells */}
                   {activeMetrics.map((metric, colIndex) => (
                     <TableCell
                       key={metric.id}
@@ -426,25 +421,23 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
           </Table>
         </div>
 
-        {/* Custom Scrollbar */}
         <div
           ref={scrollbarRef}
-          className="absolute bottom-0 left-0 h-2 w-full bg-muted/50 cursor-pointer"
+          className="absolute bottom-0 left-0 h-2 w-full bg-muted/50"
           onClick={handleTrackClick}
         >
           <div
             ref={thumbRef}
-            className="absolute h-full w-32 bg-muted-foreground/50 rounded hover:bg-muted-foreground/70 active:bg-muted-foreground/90 transition-colors"
+            className="absolute h-full bg-muted-foreground/50 rounded hover:bg-muted-foreground/70 active:bg-muted-foreground/90 transition-all cursor-grab active:cursor-grabbing"
             style={{
+              width: `${thumbWidth}px`,
               transform: `translateX(${scrollLeft}px)`,
-              cursor: 'grab',
             }}
             onMouseDown={handleThumbMouseDown}
           />
         </div>
       </div>
 
-      {/* Floating Analyze Button */}
       {showAnalyzeButton && (
         <div className="fixed bottom-6 right-6 z-50">
           <Button
@@ -461,7 +454,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   );
 }
 
-// Helper function to format values
 function formatValue(value: any, metricId: string): string {
   if (value === undefined || value === null) return "--";
   
