@@ -268,8 +268,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                   <TableHead
                     key={metric.id}
                     className={cn(
-                      "sticky top-0 cursor-pointer whitespace-nowrap p-4 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted/80",
-                      isNumericMetric(metric.id) ? "text-right" : ""
+                      "sticky top-0 cursor-pointer whitespace-nowrap p-4 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted/80 text-center"
                     )}
                     style={{ width: "180px" }}
                     onClick={(e) => handleHeaderClick(index + 1, e)}
@@ -323,8 +322,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                     <TableCell
                       key={metric.id}
                       className={cn(
-                        "cursor-pointer p-4",
-                        isNumericMetric(metric.id) ? "text-right" : "",
+                        "cursor-pointer p-4 text-center",
                         isCellSelected(rowIndex, colIndex + 1) ? "bg-primary/10" : ""
                       )}
                       onClick={(e) => handleCellClick(rowIndex, colIndex + 1, e)}
