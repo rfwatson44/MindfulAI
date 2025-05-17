@@ -85,6 +85,20 @@ export function getColumnDistribution(selection: SelectedRange): string {
   return `${abovePct}% of ads have above-average ${metricName}, ${nearPct}% are near average, and ${belowPct}% are below average.`;
 }
 
+function getColumnStats(values: any[]) {
+  const numericValues = values
+    .map((v: any) => Number(v.value))
+    .filter((v: number) => !isNaN(v));
+
+  if (!numericValues.length) return null;
+
+  return {
+    average: numericValues.reduce((a, b) => a + b, 0) / numericValues.length,
+    highest: Math.max(...numericValues),
+    lowest: Math.min(...numericValues)
+  };
+}
+
 export default function SummarizeTab({ selectedRange, adsData }: { selectedRange: SelectedRange | null; adsData: Ad[] }) {
   if (!selectedRange) {
     return (
@@ -95,10 +109,47 @@ export default function SummarizeTab({ selectedRange, adsData }: { selectedRange
     );
   }
 
+  if (selectedRange.type === "column") {
+    const metrics = selectedRange.metricName.split(", ");
+    const metricValues = metrics.map((metric, index) => {
+      const values = selectedRange.values.filter(v => v.metricName === metric);
+      const stats = getColumnStats(values);
+      
+      return stats ? (
+        <div key={index} className="space-y-6 mb-8">
+          <div className="font-medium text-xl mb-4">
+            Summary for {metric}
+          </div>
+          <div className="flex flex-row gap-4 w-full">
+            <div className="flex-1 rounded-lg bg-gray-100 p-6 flex flex-col items-center">
+              <div className="text-gray-500 text-base mb-1">Average</div>
+              <div className="text-3xl font-bold">{formatValue(stats.average, selectedRange.metricId)}</div>
+            </div>
+            <div className="flex-1 rounded-lg bg-gray-100 p-6 flex flex-col items-center">
+              <div className="text-gray-500 text-base mb-1">Highest</div>
+              <div className="text-3xl font-bold">{formatValue(stats.highest, selectedRange.metricId)}</div>
+            </div>
+            <div className="flex-1 rounded-lg bg-gray-100 p-6 flex flex-col items-center">
+              <div className="text-gray-500 text-base mb-1">Lowest</div>
+              <div className="text-3xl font-bold">{formatValue(stats.lowest, selectedRange.metricId)}</div>
+            </div>
+          </div>
+          <div className="bg-gray-200 rounded-lg p-6 mt-6 text-left">
+            <div className="font-semibold mb-2">Distribution</div>
+            <div className="text-gray-700 text-base">
+              {getColumnDistribution({ ...selectedRange, metricName: metric, values: values })}
+            </div>
+          </div>
+        </div>
+      ) : null;
+    });
+
+    return <div className="space-y-4">{metricValues}</div>;
+  }
+
   return (
     <div className="space-y-4">
       <div className="rounded-lg border bg-muted/30 p-4">
-
         {selectedRange.type === "cell" && (
           <>
             <div className="text-sm">
@@ -122,42 +173,6 @@ export default function SummarizeTab({ selectedRange, adsData }: { selectedRange
               <div>Low: {formatValue(min, undefined)}</div>
               <div>Average: {formatValue(avg, undefined)}</div>
             </div>
-          );
-        })()}
-        {selectedRange.type === "column" && (() => {
-          const values = (selectedRange as any).values?.map((v: any) => Number(v.value)).filter((v: number) => !isNaN(v)) || [];
-          if (!values.length) return <div className="text-sm">No numeric data</div>;
-          const avg = values.reduce((a: number, b: number) => a + b, 0) / values.length;
-          const max = Math.max(...values);
-          const min = Math.min(...values);
-          // Get metric names for display
-          const metricNames = (selectedRange as any).metricName || ((selectedRange as any).values?.[0]?.metricName ?? "Metric");
-          return (
-            <>
-              <div className="font-medium mb-4 text-xl">
-                Summary for {metricNames}
-              </div>
-              <div className="flex flex-row gap-4 w-full">
-                <div className="flex-1 rounded-lg bg-gray-100 p-6 flex flex-col items-center">
-                  <div className="text-gray-500 text-base mb-1">Average</div>
-                  <div className="text-3xl font-bold">{formatValue(avg, undefined)}</div>
-                </div>
-                <div className="flex-1 rounded-lg bg-gray-100 p-6 flex flex-col items-center">
-                  <div className="text-gray-500 text-base mb-1">Highest</div>
-                  <div className="text-3xl font-bold">{formatValue(max, undefined)}</div>
-                </div>
-                <div className="flex-1 rounded-lg bg-gray-100 p-6 flex flex-col items-center">
-                  <div className="text-gray-500 text-base mb-1">Lowest</div>
-                  <div className="text-3xl font-bold">{formatValue(min, undefined)}</div>
-                </div>
-              </div>
-              <div className="bg-gray-200 rounded-lg p-6 mt-6 text-left">
-                <div className="font-semibold mb-2">Distribution</div>
-                <div className="text-gray-700 text-base">
-                  {getColumnDistribution(selectedRange as any)}
-                </div>
-              </div>
-            </>
           );
         })()}
       </div>
