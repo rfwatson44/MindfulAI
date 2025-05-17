@@ -25,11 +25,13 @@ function formatValue(value: any, metricId: string | undefined): string {
   // Format averages (x,xxx.xx)
   if (metricId?.toLowerCase().includes("average")) {
     const formattedValue = Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return metricId.includes("spend") ? `$${formattedValue}` : formattedValue;
+    // Only add $ for spend-related averages
+    return metricId.toLowerCase().includes("spend") ? `$${formattedValue}` : formattedValue;
   }
   
   // Format regular numbers (x,xxx)
   const formattedValue = Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  // Only add $ for spend values
   return metricId === "spend" ? `$${formattedValue}` : formattedValue;
 }
 
