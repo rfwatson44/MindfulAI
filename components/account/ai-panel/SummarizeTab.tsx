@@ -24,11 +24,13 @@ function formatValue(value: any, metricId: string | undefined): string {
   
   // Format averages (x,xxx.xx)
   if (metricId?.toLowerCase().includes("average")) {
-    return Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const formattedValue = Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return metricId.includes("spend") ? `$${formattedValue}` : formattedValue;
   }
   
   // Format regular numbers (x,xxx)
-  return Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  const formattedValue = Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  return metricId === "spend" ? `$${formattedValue}` : formattedValue;
 }
 
 function getColumnStats(values: any[]) {
