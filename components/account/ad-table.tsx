@@ -29,11 +29,19 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   const [showAnalyzeButton, setShowAnalyzeButton] = useState(false);
   const [selectionMode, setSelectionMode] = useState<'none' | 'cells' | 'rows' | 'columns'>('none');
   const [tableWidth, setTableWidth] = useState<number>(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [startX, setStartX] = useState(0);
+  const [scrollStartLeft, setScrollStartLeft] = useState(0);
+  
+  const tableContainerRef = useRef<HTMLDivElement>(null);
+  const scrollbarRef = useRef<HTMLDivElement>(null);
+  const thumbRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const updateTableWidth = () => {
-      const sidebarWidth = sidebarRef.current?.offsetWidth || 288; // Default to 288px if ref not available
+      const sidebarWidth = sidebarRef.current?.offsetWidth || 288;
       const newWidth = window.innerWidth - sidebarWidth - 5;
       setTableWidth(newWidth);
     };
@@ -45,6 +53,73 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       window.removeEventListener('resize', updateTableWidth);
     };
   }, []);
+
+  // Handle scrollbar interaction
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging || !tableContainerRef.current || !scrollbarRef.current || !thumbRef.current) return;
+
+      const scrollbarWidth = scrollbarRef.current.clientWidth;
+      const thumbWidth = thumbRef.current.clientWidth;
+      const maxScroll = scrollbarWidth - thumbWidth;
+      const delta = e.clientX - startX;
+      const newScrollLeft = Math.max(0, Math.min(scrollStartLeft + delta, maxScroll));
+      
+      const scrollRatio = newScrollLeft / maxScroll;
+      const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
+      tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
+      setScrollLeft(newScrollLeft);
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    if (isDragging) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, startX, scrollStartLeft]);
+
+  // Handle table scroll
+  const handleScroll = () => {
+    if (!tableContainerRef.current || !scrollbarRef.current || !thumbRef.current) return;
+
+    const { scrollLeft, scrollWidth, clientWidth } = tableContainerRef.current;
+    const scrollRatio = scrollLeft / (scrollWidth - clientWidth);
+    const scrollbarWidth = scrollbarRef.current.clientWidth;
+    const thumbWidth = thumbRef.current.clientWidth;
+    const maxScroll = scrollbarWidth - thumbWidth;
+    
+    setScrollLeft(scrollRatio * maxScroll);
+  };
+
+  // Handle scrollbar thumb mousedown
+  const handleThumbMouseDown = (e: React.MouseEvent) => {
+    setIsDragging(true);
+    setStartX(e.clientX);
+    setScrollStartLeft(scrollLeft);
+  };
+
+  // Handle scrollbar track click
+  const handleTrackClick = (e: React.MouseEvent) => {
+    if (!tableContainerRef.current || !scrollbarRef.current || !thumbRef.current) return;
+    
+    const rect = scrollbarRef.current.getBoundingClientRect();
+    const clickPosition = e.clientX - rect.left;
+    const scrollbarWidth = scrollbarRef.current.clientWidth;
+    const thumbWidth = thumbRef.current.clientWidth;
+    const maxScroll = scrollbarWidth - thumbWidth;
+    const scrollRatio = clickPosition / scrollbarWidth;
+    
+    const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
+    tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
+  };
 
   // Update filtered data when data changes
   useMemo(() => {
@@ -248,8 +323,13 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         </div>
       </div>
       
-      <div className="relative flex-1 overflow-auto">
-        <div style={{ width: `${tableWidth}px` }}>
+      <div className="relative flex-1 overflow-hidden">
+        <div 
+          ref={tableContainerRef}
+          className="overflow-x-auto"
+          onScroll={handleScroll}
+          style={{ width: `${tableWidth}px` }}
+        >
           <Table>
             <TableHeader>
               <TableRow className="border-b bg-muted/50">
@@ -344,6 +424,23 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
               ))}
             </TableBody>
           </Table>
+        </div>
+
+        {/* Custom Scrollbar */}
+        <div
+          ref={scrollbarRef}
+          className="absolute bottom-0 left-0 h-2 w-full bg-muted/50 cursor-pointer"
+          onClick={handleTrackClick}
+        >
+          <div
+            ref={thumbRef}
+            className="absolute h-full w-32 bg-muted-foreground/50 rounded hover:bg-muted-foreground/70 active:bg-muted-foreground/90 transition-colors"
+            style={{
+              transform: `translateX(${scrollLeft}px)`,
+              cursor: 'grab',
+            }}
+            onMouseDown={handleThumbMouseDown}
+          />
         </div>
       </div>
 
