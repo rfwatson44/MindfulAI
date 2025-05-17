@@ -11,12 +11,24 @@ export function getColumnDistribution(selection: any): string {
 
 function formatValue(value: any, metricId: string | undefined): string {
   if (value === undefined || value === null) return "--";
-  if (metricId === "spend" || metricId === "cpa" || metricId === "costPerResult") {
-    return `$${Number(value).toFixed(2)}`;
-  } else if (metricId === "ctr" || metricId === "roas") {
+  
+  // Format currency values ($xx,xxx.xx)
+  if (metricId === "spend" || metricId === "cpa" || metricId === "costPerResult" || metricId?.toLowerCase().includes("cost")) {
+    return `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  
+  // Format percentages (xx.xx%)
+  if (metricId === "ctr" || metricId === "roas") {
     return `${Number(value).toFixed(2)}%`;
   }
-  return String(value).includes(".") ? Number(value).toFixed(2) : Number(value).toLocaleString();
+  
+  // Format averages (x,xxx.xx)
+  if (metricId?.toLowerCase().includes("average")) {
+    return Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  
+  // Format regular numbers (x,xxx)
+  return Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
 
 function getColumnStats(values: any[]) {
@@ -50,9 +62,18 @@ function ColumnSummary({ metric, values, metricId }: { metric: string; values: a
     <div className="space-y-2 mb-4 last:mb-0">
       <h3 className="text-sm font-medium text-gray-700">{metric}</h3>
       <div className="flex gap-2">
-        <MetricSummaryCard label="Average" value={formatValue(stats.average, metricId)} />
-        <MetricSummaryCard label="Highest" value={formatValue(stats.highest, metricId)} />
-        <MetricSummaryCard label="Lowest" value={formatValue(stats.lowest, metricId)} />
+        <MetricSummaryCard 
+          label="Average" 
+          value={formatValue(stats.average, metricId + "_average")} 
+        />
+        <MetricSummaryCard 
+          label="Highest" 
+          value={formatValue(stats.highest, metricId)} 
+        />
+        <MetricSummaryCard 
+          label="Lowest" 
+          value={formatValue(stats.lowest, metricId)} 
+        />
       </div>
     </div>
   );
@@ -67,9 +88,18 @@ function RowSummary({ adName, values }: { adName: string; values: any[] }) {
     <div className="space-y-2 mb-4 last:mb-0">
       <h3 className="text-sm font-medium text-gray-700">{adName}</h3>
       <div className="flex gap-2">
-        <MetricSummaryCard label="Spend" value={formatValue(spend, "spend")} />
-        <MetricSummaryCard label="Conversions" value={formatValue(conversions, "conversions")} />
-        <MetricSummaryCard label="Cost/Conv." value={formatValue(costPerConversion, "costPerResult")} />
+        <MetricSummaryCard 
+          label="Spend" 
+          value={formatValue(spend, "spend")} 
+        />
+        <MetricSummaryCard 
+          label="Conversions" 
+          value={formatValue(conversions, "conversions")} 
+        />
+        <MetricSummaryCard 
+          label="Cost/Conv." 
+          value={formatValue(costPerConversion, "costPerResult")} 
+        />
       </div>
     </div>
   );
@@ -85,7 +115,6 @@ export default function SummarizeTab({ selectedRange, adsData }: { selectedRange
     );
   }
 
-  // Show both column and row summaries when both are selected
   const showColumnSummary = selectedRange.type === "column";
   const showRowSummary = selectedRange.type === "row";
   const showCellSummary = selectedRange.type === "cell";
