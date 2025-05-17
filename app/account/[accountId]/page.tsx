@@ -1,5 +1,6 @@
-import { getAccountById, mockAdAccounts } from "@/lib/mock-data";
+import { getAccountById, mockAdAccounts, filterAccountAds } from "@/lib/mock-data";
 import { AccountPageClient } from "./account-page-client";
+import { AdType } from "@/lib/types";
 
 // Generate static params for all account IDs
 export function generateStaticParams() {
@@ -24,5 +25,8 @@ export default function AccountPage({ params }: { params: { accountId: string } 
     );
   }
 
-  return <AccountPageClient account={account} />;
+  // Pre-fetch initial ads data on the server
+  const initialAdsData = filterAccountAds(account.id, "static" as AdType);
+
+  return <AccountPageClient account={account} initialAdsData={initialAdsData} />;
 }

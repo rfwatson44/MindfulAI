@@ -11,13 +11,12 @@ import { Ad, AdType, SelectedRange } from "@/lib/types";
 
 interface AccountPageClientProps {
   account: any; // Replace with your account type
+  initialAdsData: Ad[];
 }
 
-export function AccountPageClient({ account }: AccountPageClientProps) {
+export function AccountPageClient({ account, initialAdsData }: AccountPageClientProps) {
   const [activeTab, setActiveTab] = useState<AdType>("static");
-  const [adsData, setAdsData] = useState<Ad[]>(
-    filterAccountAds(account.id, activeTab)
-  );
+  const [adsData, setAdsData] = useState<Ad[]>(initialAdsData);
   const [selectedRange, setSelectedRange] = useState<SelectedRange | null>(null);
   const [isAIPanelOpen, setIsAIPanelOpen] = useState(false);
   
