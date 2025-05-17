@@ -38,15 +38,11 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const scrollbarRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLDivElement>(null);
-  const sidebarRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const updateTableWidth = () => {
-      if (sidebarRef.current) {
-        const sidebarWidth = sidebarRef.current.offsetWidth;
-        const newWidth = window.innerWidth - sidebarWidth - 5;
-        setTableWidth(newWidth);
-      }
+      const containerWidth = window.innerWidth - 288; // 288px is sidebar width
+      setTableWidth(Math.max(containerWidth - 48, 800)); // Minimum width of 800px
     };
 
     updateTableWidth();
@@ -66,40 +62,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       setThumbWidth(newThumbWidth);
     }
   }, [activeMetrics, filteredData]);
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDragging || !tableContainerRef.current || !scrollbarRef.current) return;
-
-      const scrollbarRect = scrollbarRef.current.getBoundingClientRect();
-      const scrollbarWidth = scrollbarRect.width;
-      const maxScroll = scrollbarWidth - thumbWidth;
-      const delta = e.clientX - startX;
-      const newScrollLeft = Math.max(0, Math.min(scrollStartLeft + delta, maxScroll));
-      
-      if (tableContainerRef.current) {
-        const scrollRatio = newScrollLeft / maxScroll;
-        const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
-        tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
-      }
-      
-      setScrollLeft(newScrollLeft);
-    };
-
-    const handleMouseUp = () => {
-      setIsDragging(false);
-    };
-
-    if (isDragging) {
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-    }
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isDragging, startX, scrollStartLeft, thumbWidth]);
 
   const handleScroll = () => {
     if (!tableContainerRef.current || !scrollbarRef.current) return;
@@ -135,6 +97,40 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
     }
   };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging || !tableContainerRef.current || !scrollbarRef.current) return;
+
+      const scrollbarRect = scrollbarRef.current.getBoundingClientRect();
+      const scrollbarWidth = scrollbarRect.width;
+      const maxScroll = scrollbarWidth - thumbWidth;
+      const delta = e.clientX - startX;
+      const newScrollLeft = Math.max(0, Math.min(scrollStartLeft + delta, maxScroll));
+      
+      if (tableContainerRef.current) {
+        const scrollRatio = newScrollLeft / maxScroll;
+        const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
+        tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
+      }
+      
+      setScrollLeft(newScrollLeft);
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    if (isDragging) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, startX, scrollStartLeft, thumbWidth]);
 
   useMemo(() => {
     setFilteredData(data);
