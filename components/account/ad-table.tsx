@@ -155,10 +155,31 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       .filter(([_, count]) => count === allMetrics.length)
       .map(([row]) => row);
 
-    // Prepare selection data
+    // Create selection data based on what's selected
     let selectionData: SelectedRange;
 
-    if (fullColumns.length > 0) {
+    if (fullColumns.length > 0 && fullRows.length > 0) {
+      // Both columns and rows are selected
+      const selectedRows = fullRows.map(rowIndex => filteredData[rowIndex]);
+      const selectedMetrics = fullColumns.map(colIndex => allMetrics[colIndex]);
+      
+      const values = selectedRows.flatMap(ad =>
+        selectedMetrics.map(metric => ({
+          adId: ad.id,
+          adName: ad.name,
+          metricId: metric.id,
+          metricName: metric.name,
+          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
+        }))
+      );
+
+      selectionData = {
+        type: "row",
+        adId: selectedRows[0].id,
+        adName: selectedRows.map(ad => ad.name).join(", "),
+        values,
+      };
+    } else if (fullColumns.length > 0) {
       // Column selection
       const metrics = fullColumns.map(colIndex => allMetrics[colIndex]);
       const values = metrics.flatMap(metric => 
@@ -300,8 +321,10 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                 {/* Ad preview/name */}
                 <TableCell
                   className={cn(
-                    "sticky left-12 z-10 h-16 bg-background p-2 group-hover:bg-muted/50"
+                    "sticky left-12 z-10 h-16 bg-background p-2 group-hover:bg-muted/50",
+                    isCellSelected(rowIndex, 0) ? "bg-primary/10" : ""
                   )}
+                  onClick={(e) => handleCellClick(rowIndex, 0, e)}
                 >
                   <div className="flex items-center gap-3">
                     <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded border border-border bg-muted">
@@ -332,7 +355,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                     )}
                     onClick={(e) => handleCellClick(rowIndex, colIndex + 1, e)}
                   >
-                    {formatMetricValue(ad[metric.id as keyof Ad], metric.id)}
+                    {formatValue(ad[metric.id as keyof Ad], metric.id)}
                   </TableCell>
                 ))}
               </TableRow>
@@ -359,7 +382,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
 }
 
 // Helper function to format metric values
-function formatMetricValue(value: any, metricId: string): string {
+function formatValue(value: any, metricId: string): string {
   if (value === undefined || value === null) return "--";
   
   if (metricId === "spend" || metricId === "cpa" || metricId === "costPerResult") {
