@@ -235,9 +235,9 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         <div className="min-w-[1024px]">
           <Table>
             <TableHeader>
-              <TableRow className="bg-muted/50 hover:bg-muted">
+              <TableRow className="border-b bg-muted/50">
                 {/* Row header (empty corner) */}
-                <TableHead className="sticky left-0 z-20 w-12 bg-muted/50 p-0">
+                <TableHead className="sticky left-0 top-0 z-20 w-12 bg-muted/50 p-0">
                   <div className="flex h-full w-full items-center justify-center border-r border-border">
                     #
                   </div>
@@ -245,7 +245,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                 
                 {/* Ad preview/name column */}
                 <TableHead
-                  className="sticky left-12 z-20 w-64 cursor-pointer bg-muted/50 p-2 font-medium hover:bg-muted/80"
+                  className="sticky left-12 top-0 z-20 w-64 cursor-pointer bg-muted/50 p-3 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted/80"
                   onClick={(e) => handleHeaderClick(0, e)}
                 >
                   <span>Ad</span>
@@ -256,7 +256,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                   <TableHead
                     key={metric.id}
                     className={cn(
-                      "cursor-pointer whitespace-nowrap p-2 font-medium hover:bg-muted/80",
+                      "sticky top-0 cursor-pointer whitespace-nowrap p-3 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted/80",
                       isNumericMetric(metric.id) ? "text-center" : ""
                     )}
                     style={{ width: "150px" }}
