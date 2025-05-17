@@ -29,21 +29,19 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   const [showAnalyzeButton, setShowAnalyzeButton] = useState(false);
   const [selectionMode, setSelectionMode] = useState<'none' | 'cells' | 'rows' | 'columns'>('none');
   const [tableWidth, setTableWidth] = useState<number>(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [startX, setStartX] = useState(0);
+  const [scrollStartLeft, setScrollStartLeft] = useState(0);
   
   const tableContainerRef = useRef<HTMLDivElement>(null);
-  const tableWrapperRef = useRef<HTMLDivElement>(null);
+  const scrollbarRef = useRef<HTMLDivElement>(null);
+  const thumbRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const updateTableWidth = () => {
-      if (tableWrapperRef.current) {
-        const containerWidth = tableWrapperRef.current.clientWidth;
-        const minWidth = Math.max(
-          containerWidth,
-          // Base width (row number + ad name) + metrics width
-          76 + 300 + (activeMetrics.length * 180)
-        );
-        setTableWidth(minWidth);
-      }
+      const containerWidth = window.innerWidth - 288; // Sidebar width
+      setTableWidth(Math.max(containerWidth - 48, 800)); // Min width 800px
     };
 
     updateTableWidth();
@@ -52,7 +50,70 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     return () => {
       window.removeEventListener('resize', updateTableWidth);
     };
-  }, [activeMetrics.length]);
+  }, []);
+
+  const handleScroll = () => {
+    if (!tableContainerRef.current || !scrollbarRef.current || !thumbRef.current) return;
+
+    const { scrollLeft, scrollWidth, clientWidth } = tableContainerRef.current;
+    const scrollRatio = scrollLeft / (scrollWidth - clientWidth);
+    const scrollbarWidth = scrollbarRef.current.clientWidth;
+    const thumbWidth = thumbRef.current.clientWidth;
+    const maxScroll = scrollbarWidth - thumbWidth;
+    
+    setScrollLeft(scrollRatio * maxScroll);
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging || !tableContainerRef.current || !scrollbarRef.current || !thumbRef.current) return;
+
+      const scrollbarWidth = scrollbarRef.current.clientWidth;
+      const thumbWidth = thumbRef.current.clientWidth;
+      const maxScroll = scrollbarWidth - thumbWidth;
+      const delta = e.clientX - startX;
+      const newScrollLeft = Math.max(0, Math.min(scrollStartLeft + delta, maxScroll));
+      
+      const scrollRatio = newScrollLeft / maxScroll;
+      const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
+      tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
+      setScrollLeft(newScrollLeft);
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    if (isDragging) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, startX, scrollStartLeft]);
+
+  const handleThumbMouseDown = (e: React.MouseEvent) => {
+    setIsDragging(true);
+    setStartX(e.clientX);
+    setScrollStartLeft(scrollLeft);
+  };
+
+  const handleTrackClick = (e: React.MouseEvent) => {
+    if (!tableContainerRef.current || !scrollbarRef.current || !thumbRef.current) return;
+    
+    const rect = scrollbarRef.current.getBoundingClientRect();
+    const clickPosition = e.clientX - rect.left;
+    const scrollbarWidth = scrollbarRef.current.clientWidth;
+    const thumbWidth = thumbRef.current.clientWidth;
+    const maxScroll = scrollbarWidth - thumbWidth;
+    const scrollRatio = clickPosition / scrollbarWidth;
+    
+    const maxTableScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
+    tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
+  };
 
   useMemo(() => {
     setFilteredData(data);
@@ -242,23 +303,24 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         </div>
       </div>
       
-      <div className="relative flex-1 overflow-hidden" ref={tableWrapperRef}>
+      <div className="relative flex-1 overflow-hidden">
         <div 
           ref={tableContainerRef}
           className="h-full overflow-auto"
+          onScroll={handleScroll}
           style={{ width: `${tableWidth}px` }}
         >
           <Table>
             <TableHeader>
               <TableRow className="border-b bg-muted/50">
-                <TableHead className="sticky left-0 top-0 z-20 w-[76px] bg-muted/50 p-0">
+                <TableHead className="sticky left-0 top-0 z-20 w-12 bg-muted/50 p-0">
                   <div className="flex h-full w-full items-center justify-center border-r border-border">
                     #
                   </div>
                 </TableHead>
                 
                 <TableHead
-                  className="sticky left-[76px] top-0 z-20 w-[300px] cursor-pointer bg-muted/50 p-4 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted/80"
+                  className="sticky left-12 top-0 z-20 w-64 cursor-pointer bg-muted/50 p-3 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted/80"
                   onClick={(e) => handleHeaderClick(0, e)}
                 >
                   <span>Ad</span>
@@ -268,9 +330,10 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                   <TableHead
                     key={metric.id}
                     className={cn(
-                      "sticky top-0 cursor-pointer whitespace-nowrap p-4 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted/80 text-center"
+                      "sticky top-0 cursor-pointer whitespace-nowrap p-3 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted/80",
+                      isNumericMetric(metric.id) ? "text-center" : ""
                     )}
-                    style={{ width: "180px" }}
+                    style={{ width: "150px" }}
                     onClick={(e) => handleHeaderClick(index + 1, e)}
                   >
                     <span>{metric.name}</span>
@@ -295,7 +358,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                   
                   <TableCell
                     className={cn(
-                      "sticky left-[76px] z-10 h-16 bg-background p-4 group-hover:bg-muted/50",
+                      "sticky left-12 z-10 h-16 bg-background p-2 group-hover:bg-muted/50",
                       isCellSelected(rowIndex, 0) ? "bg-primary/10" : ""
                     )}
                     onClick={(e) => handleCellClick(rowIndex, 0, e)}
@@ -322,7 +385,8 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                     <TableCell
                       key={metric.id}
                       className={cn(
-                        "cursor-pointer p-4 text-center",
+                        "cursor-pointer p-2",
+                        isNumericMetric(metric.id) ? "text-center" : "text-right",
                         isCellSelected(rowIndex, colIndex + 1) ? "bg-primary/10" : ""
                       )}
                       onClick={(e) => handleCellClick(rowIndex, colIndex + 1, e)}
@@ -334,6 +398,22 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
               ))}
             </TableBody>
           </Table>
+        </div>
+
+        <div
+          ref={scrollbarRef}
+          className="absolute bottom-0 left-0 h-2 w-full bg-muted/50 cursor-pointer"
+          onClick={handleTrackClick}
+        >
+          <div
+            ref={thumbRef}
+            className="absolute h-full w-32 bg-muted-foreground/50 rounded hover:bg-muted-foreground/70 active:bg-muted-foreground/90 transition-colors"
+            style={{
+              transform: `translateX(${scrollLeft}px)`,
+              cursor: 'grab',
+            }}
+            onMouseDown={handleThumbMouseDown}
+          />
         </div>
       </div>
 

@@ -6,8 +6,9 @@ const nextConfig = {
   },
   images: { unoptimized: true },
   webpack: (config, { isServer }) => {
-    // Disable webpack cache for both client and server
-    config.cache = false;
+    if (!isServer) {
+      config.cache = false;
+    }
     return config;
   },
 };
