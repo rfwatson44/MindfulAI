@@ -28,32 +28,10 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   const [selectedCells, setSelectedCells] = useState<Array<{ row: number; col: number }>>([]);
   const [showAnalyzeButton, setShowAnalyzeButton] = useState(false);
   const [selectionMode, setSelectionMode] = useState<'none' | 'cells' | 'rows' | 'columns'>('none');
-  const [tableWidth, setTableWidth] = useState<number>(0);
   
   const tableContainerRef = useRef<HTMLDivElement>(null);
-  const tableWrapperRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const updateTableWidth = () => {
-      if (tableWrapperRef.current) {
-        const containerWidth = tableWrapperRef.current.clientWidth;
-        const minWidth = Math.max(
-          containerWidth,
-          // Base width (row number + ad name) + metrics width
-          76 + 300 + (activeMetrics.length * 180)
-        );
-        setTableWidth(minWidth);
-      }
-    };
-
-    updateTableWidth();
-    window.addEventListener('resize', updateTableWidth);
-    
-    return () => {
-      window.removeEventListener('resize', updateTableWidth);
-    };
-  }, [activeMetrics.length]);
-
+  // Update filtered data when data changes
   useMemo(() => {
     setFilteredData(data);
   }, [data]);
@@ -242,11 +220,10 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         </div>
       </div>
       
-      <div className="relative flex-1 overflow-hidden" ref={tableWrapperRef}>
+      <div className="relative flex-1 overflow-hidden">
         <div 
           ref={tableContainerRef}
           className="h-full overflow-auto"
-          style={{ width: `${tableWidth}px` }}
         >
           <Table>
             <TableHeader>
