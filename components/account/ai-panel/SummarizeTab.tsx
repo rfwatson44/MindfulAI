@@ -6,9 +6,8 @@ function formatValue(value: any, metricId: string | undefined): string {
     return `$${Number(value).toFixed(2)}`;
   } else if (metricId === "ctr" || metricId === "roas") {
     return `${Number(value).toFixed(2)}%`;
-  } else {
-    return String(value).includes(".") ? Number(value).toFixed(2) : Number(value).toLocaleString();
   }
+  return String(value).includes(".") ? Number(value).toFixed(2) : Number(value).toLocaleString();
 }
 
 function getPerformanceText(selection: SelectedRange, adsData: Ad[]): string {
@@ -26,44 +25,15 @@ function getPerformanceText(selection: SelectedRange, adsData: Ad[]): string {
     const percentile = Math.round((rank / allValues.length) * 100);
     const higherIsBetter = !["cpa", "costPerResult"].includes(metricId);
     if (percentile <= 25) {
-      return higherIsBetter ?
-        "in the top 25% (performing very well)" :
-        "in the bottom 25% (performing very well)";
+      return higherIsBetter ? "in the top 25% (performing very well)" : "in the bottom 25% (performing very well)";
     } else if (percentile <= 50) {
-      return higherIsBetter ?
-        "above average" :
-        "below average (which is good)";
+      return higherIsBetter ? "above average" : "below average (which is good)";
     } else if (percentile <= 75) {
-      return higherIsBetter ?
-        "below average" :
-        "above average (which is not ideal)";
-    } else {
-      return higherIsBetter ?
-        "in the bottom 25% (underperforming)" :
-        "in the top 25% (underperforming)";
+      return higherIsBetter ? "below average" : "above average (which is not ideal)";
     }
+    return higherIsBetter ? "in the bottom 25% (underperforming)" : "in the top 25% (underperforming)";
   } catch (error) {
     return "difficult to compare";
-  }
-}
-
-function getRowRecommendation(selection: SelectedRange): string {
-  if (selection.type !== "row") return "analyzing more data";
-  const ctr = (selection as any).values?.find((v: any) => v.metricId === "ctr")?.value;
-  const conversions = (selection as any).values?.find((v: any) => v.metricId === "conversions")?.value;
-  const spend = (selection as any).values?.find((v: any) => v.metricId === "spend")?.value;
-  if (!ctr || !conversions || !spend) return "collecting more data for a complete analysis";
-  const numCTR = Number(ctr);
-  const numConversions = Number(conversions);
-  const numSpend = Number(spend);
-  if (numCTR < 1.5) {
-    return "improving the creative or targeting to increase click-through rate";
-  } else if (numConversions < 5 && numSpend > 100) {
-    return "reviewing the landing page experience to improve conversion rate";
-  } else if (numCTR > 2.5 && numConversions > 10) {
-    return "increasing budget to scale this successful ad";
-  } else {
-    return "maintaining the current strategy while testing new variations";
   }
 }
 
@@ -82,7 +52,7 @@ export function getColumnDistribution(selection: SelectedRange): string {
   const belowPct = Math.round((belowAvg / values.length) * 100);
   const nearPct = Math.round((nearAvg / values.length) * 100);
   const abovePct = Math.round((aboveAvg / values.length) * 100);
-  return `${abovePct}% of ads have above-average ${metricName}, ${nearPct}% are near average, and ${belowPct}% are below average.`;
+  return `${abovePct}% above average, ${nearPct}% near average, ${belowPct}% below average`;
 }
 
 function getColumnStats(values: any[]) {
@@ -99,6 +69,37 @@ function getColumnStats(values: any[]) {
   };
 }
 
+function MetricSummaryCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex-1 rounded-lg bg-gray-100 p-4 flex flex-col items-center">
+      <div className="text-sm text-gray-500 mb-1">{label}</div>
+      <div className="text-xl font-bold">{value}</div>
+    </div>
+  );
+}
+
+function ColumnSummary({ metric, values, metricId }: { metric: string; values: any[]; metricId: string }) {
+  const stats = getColumnStats(values);
+  if (!stats) return null;
+
+  return (
+    <div className="space-y-4 mb-6 last:mb-0">
+      <h3 className="font-medium text-lg">{metric}</h3>
+      <div className="flex gap-3">
+        <MetricSummaryCard label="Average" value={formatValue(stats.average, metricId)} />
+        <MetricSummaryCard label="Highest" value={formatValue(stats.highest, metricId)} />
+        <MetricSummaryCard label="Lowest" value={formatValue(stats.lowest, metricId)} />
+      </div>
+      <div className="bg-gray-50 rounded-lg p-4 text-sm">
+        <div className="font-medium mb-1">Distribution</div>
+        <div className="text-gray-600">
+          {getColumnDistribution({ type: "column", metricName: metric, values, metricId })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SummarizeTab({ selectedRange, adsData }: { selectedRange: SelectedRange | null; adsData: Ad[] }) {
   if (!selectedRange) {
     return (
@@ -111,51 +112,29 @@ export default function SummarizeTab({ selectedRange, adsData }: { selectedRange
 
   if (selectedRange.type === "column") {
     const metrics = selectedRange.metricName.split(", ");
-    const metricValues = metrics.map((metric, index) => {
-      const values = selectedRange.values.filter(v => v.metricName === metric);
-      const stats = getColumnStats(values);
-      
-      return stats ? (
-        <div key={index} className="space-y-6 mb-8">
-          <div className="font-medium text-xl mb-4">
-            Summary for {metric}
-          </div>
-          <div className="flex flex-row gap-4 w-full">
-            <div className="flex-1 rounded-lg bg-gray-100 p-6 flex flex-col items-center">
-              <div className="text-gray-500 text-base mb-1">Average</div>
-              <div className="text-3xl font-bold">{formatValue(stats.average, selectedRange.metricId)}</div>
-            </div>
-            <div className="flex-1 rounded-lg bg-gray-100 p-6 flex flex-col items-center">
-              <div className="text-gray-500 text-base mb-1">Highest</div>
-              <div className="text-3xl font-bold">{formatValue(stats.highest, selectedRange.metricId)}</div>
-            </div>
-            <div className="flex-1 rounded-lg bg-gray-100 p-6 flex flex-col items-center">
-              <div className="text-gray-500 text-base mb-1">Lowest</div>
-              <div className="text-3xl font-bold">{formatValue(stats.lowest, selectedRange.metricId)}</div>
-            </div>
-          </div>
-          <div className="bg-gray-200 rounded-lg p-6 mt-6 text-left">
-            <div className="font-semibold mb-2">Distribution</div>
-            <div className="text-gray-700 text-base">
-              {getColumnDistribution({ ...selectedRange, metricName: metric, values: values })}
-            </div>
-          </div>
-        </div>
-      ) : null;
-    });
-
-    return <div className="space-y-4">{metricValues}</div>;
+    return (
+      <div className="space-y-2 p-4">
+        {metrics.map((metric, index) => (
+          <ColumnSummary
+            key={index}
+            metric={metric}
+            values={selectedRange.values.filter(v => v.metricName === metric)}
+            metricId={selectedRange.metricId}
+          />
+        ))}
+      </div>
+    );
   }
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-lg border bg-muted/30 p-4">
+    <div className="p-4">
+      <div className="rounded-lg bg-gray-50 p-4">
         {selectedRange.type === "cell" && (
           <>
             <div className="text-sm">
               <b>{(selectedRange as any).metricName}:</b> {formatValue((selectedRange as any).value, (selectedRange as any).metricId)}
             </div>
-            <div className="text-xs text-muted-foreground">
+            <div className="text-xs text-gray-500 mt-2">
               Performance: {getPerformanceText(selectedRange, adsData)}
             </div>
           </>
@@ -167,11 +146,13 @@ export default function SummarizeTab({ selectedRange, adsData }: { selectedRange
           const max = Math.max(...values);
           const min = Math.min(...values);
           return (
-            <div className="text-sm">
-              <b>Row metrics:</b>
-              <div>High: {formatValue(max, undefined)}</div>
-              <div>Low: {formatValue(min, undefined)}</div>
-              <div>Average: {formatValue(avg, undefined)}</div>
+            <div className="space-y-2">
+              <div className="font-medium mb-2">Row metrics</div>
+              <div className="flex gap-3">
+                <MetricSummaryCard label="Average" value={formatValue(avg, undefined)} />
+                <MetricSummaryCard label="Highest" value={formatValue(max, undefined)} />
+                <MetricSummaryCard label="Lowest" value={formatValue(min, undefined)} />
+              </div>
             </div>
           );
         })()}
