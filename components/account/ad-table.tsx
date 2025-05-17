@@ -248,9 +248,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                   className="sticky left-12 z-20 w-64 cursor-pointer bg-muted/50 p-2 font-medium hover:bg-muted/80"
                   onClick={(e) => handleHeaderClick(0, e)}
                 >
-                  <div className="flex items-center justify-between">
-                    <span>Ad</span>
-                  </div>
+                  <span>Ad</span>
                 </TableHead>
                 
                 {/* Metric columns */}
@@ -264,12 +262,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
                     style={{ width: "150px" }}
                     onClick={(e) => handleHeaderClick(index + 1, e)}
                   >
-                    <div className={cn(
-                      "flex items-center",
-                      isNumericMetric(metric.id) ? "justify-center" : "justify-between"
-                    )}>
-                      <span>{metric.name}</span>
-                    </div>
+                    <span>{metric.name}</span>
                   </TableHead>
                 ))}
               </TableRow>
