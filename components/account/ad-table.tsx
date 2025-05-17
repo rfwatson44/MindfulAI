@@ -232,7 +232,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       </div>
       
       <div className="relative flex-1 overflow-auto">
-        <div className="w-[1024px]">
+        <div className="w-[calc(100vw-5px)]">
           <Table>
             <TableHeader>
               <TableRow className="border-b bg-muted/50">
