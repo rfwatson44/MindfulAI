@@ -216,14 +216,18 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
-      <div className="flex flex-col gap-4 border-b p-4 md:flex-row md:items-center">
-        <TableFilters data={data} onFiltersChange={handleFiltersChange} />
-        <div className="flex-shrink-0 md:ml-auto">
-          <MetricsSelector
-            activeMetrics={activeMetrics}
-            availableMetrics={OPTIONAL_METRICS}
-            onToggle={handleMetricToggle}
-          />
+      <div className="flex flex-col gap-4 border-b p-4">
+        <div className="flex items-center gap-4">
+          <div className="w-[300px]">
+            <TableFilters data={data} onFiltersChange={handleFiltersChange} />
+          </div>
+          <div className="flex-1">
+            <MetricsSelector
+              activeMetrics={activeMetrics}
+              availableMetrics={OPTIONAL_METRICS}
+              onToggle={handleMetricToggle}
+            />
+          </div>
         </div>
       </div>
       
