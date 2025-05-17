@@ -155,8 +155,11 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       .filter(([_, count]) => count === allMetrics.length)
       .map(([row]) => row);
 
+    // Prepare selection data
+    let selectionData: SelectedRange;
+
     if (fullColumns.length > 0) {
-      // Multiple column selection
+      // Column selection
       const metrics = fullColumns.map(colIndex => allMetrics[colIndex]);
       const values = metrics.flatMap(metric => 
         filteredData.map(ad => ({
@@ -168,14 +171,14 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         }))
       );
       
-      onSelectionChange({
+      selectionData = {
         type: "column",
         metricId: metrics[0].id,
         metricName: metrics.map(m => m.name).join(", "),
         values,
-      });
+      };
     } else if (fullRows.length > 0) {
-      // Multiple row selection
+      // Row selection
       const ads = fullRows.map(rowIndex => filteredData[rowIndex]);
       const values = ads.flatMap(ad =>
         allMetrics.map(metric => ({
@@ -187,12 +190,12 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         }))
       );
       
-      onSelectionChange({
+      selectionData = {
         type: "row",
         adId: ads[0].id,
         adName: ads.map(ad => ad.name).join(", "),
         values,
-      });
+      };
     } else {
       // Individual cell selection
       const selections = selectedCells.map(cell => {
@@ -207,12 +210,14 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         };
       });
       
-      onSelectionChange({
+      selectionData = {
         type: "cell",
         ...selections[0],
         additionalSelections: selections.slice(1),
-      });
+      };
     }
+
+    onSelectionChange(selectionData);
   };
 
   // Handle analyze button click
