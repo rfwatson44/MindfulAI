@@ -65,8 +65,24 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   ) => {
     event.preventDefault();
     
-    // Single cell selection
-    setSelectedCells([{ row: rowIndex, col: colIndex }]);
+    if (event.metaKey || event.ctrlKey) {
+      // Toggle individual cell selection
+      const cellIndex = selectedCells.findIndex(
+        cell => cell.row === rowIndex && cell.col === colIndex
+      );
+      
+      if (cellIndex >= 0) {
+        // Remove cell if already selected
+        setSelectedCells(selectedCells.filter((_, i) => i !== cellIndex));
+      } else {
+        // Add new cell to selection
+        setSelectedCells([...selectedCells, { row: rowIndex, col: colIndex }]);
+      }
+    } else {
+      // Start new selection
+      setSelectedCells([{ row: rowIndex, col: colIndex }]);
+    }
+    
     setShowAnalyzeButton(true);
   };
 
@@ -76,7 +92,19 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       { length: filteredData.length },
       (_, i) => ({ row: i, col: colIndex })
     );
-    setSelectedCells(columnCells);
+
+    if (event.metaKey || event.ctrlKey) {
+      // Toggle column selection
+      const isColumnSelected = selectedCells.some(cell => cell.col === colIndex);
+      if (isColumnSelected) {
+        setSelectedCells(selectedCells.filter(cell => cell.col !== colIndex));
+      } else {
+        setSelectedCells([...selectedCells, ...columnCells]);
+      }
+    } else {
+      // Start new selection
+      setSelectedCells(columnCells);
+    }
     setShowAnalyzeButton(true);
   };
 
@@ -86,7 +114,19 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       { length: activeMetrics.length + 1 },
       (_, i) => ({ row: rowIndex, col: i })
     );
-    setSelectedCells(rowCells);
+
+    if (event.metaKey || event.ctrlKey) {
+      // Toggle row selection
+      const isRowSelected = selectedCells.some(cell => cell.row === rowIndex);
+      if (isRowSelected) {
+        setSelectedCells(selectedCells.filter(cell => cell.row !== rowIndex));
+      } else {
+        setSelectedCells([...selectedCells, ...rowCells]);
+      }
+    } else {
+      // Start new selection
+      setSelectedCells(rowCells);
+    }
     setShowAnalyzeButton(true);
   };
 
@@ -104,10 +144,10 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     const uniqueCols = Array.from(new Set(selectedCells.map(cell => cell.col)));
 
     // Check if selection represents full columns
-    const isColumnSelection = uniqueRows.length === filteredData.length && uniqueCols.length < allMetrics.length;
+    const isColumnSelection = uniqueRows.length === filteredData.length;
     
     // Check if selection represents full rows
-    const isRowSelection = uniqueCols.length === allMetrics.length && uniqueRows.length < filteredData.length;
+    const isRowSelection = uniqueCols.length === allMetrics.length;
 
     if (isColumnSelection) {
       // Column selection
@@ -148,18 +188,23 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         values,
       });
     } else {
-      // Single cell selection
-      const cell = selectedCells[0];
-      const ad = filteredData[cell.row];
-      const metric = allMetrics[cell.col];
+      // Multiple cell selection
+      const selections = selectedCells.map(cell => {
+        const ad = filteredData[cell.row];
+        const metric = allMetrics[cell.col];
+        return {
+          adId: ad.id,
+          adName: ad.name,
+          metricId: metric.id,
+          metricName: metric.name,
+          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
+        };
+      });
       
       onSelectionChange({
         type: "cell",
-        adId: ad.id,
-        adName: ad.name,
-        metricId: metric.id,
-        metricName: metric.name,
-        value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
+        ...selections[0],
+        additionalSelections: selections.slice(1),
       });
     }
   };
