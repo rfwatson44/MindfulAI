@@ -7,17 +7,15 @@ import { getColumnDistribution } from "./SummarizeTab";
 function getSelectionSummary(selectedRange: SelectedRange): string {
   switch (selectedRange.type) {
     case "cell": {
-      // Support for multi-cell selection (if any)
-      // Only count additionalSelections if present on the object
       const totalSelections = 1 + (typeof (selectedRange as any).additionalSelections !== 'undefined' ? (selectedRange as any).additionalSelections.length : 0);
       return `${totalSelections} cell${totalSelections > 1 ? "s" : ""} selected`;
     }
     case "row": {
-      const rowCount = selectedRange.values?.length || 1;
+      const rowCount = selectedRange.adName.split(", ").length;
       return `${rowCount} row${rowCount > 1 ? "s" : ""} selected`;
     }
     case "column": {
-      const columnCount = selectedRange.values?.length || 1;
+      const columnCount = selectedRange.metricName.split(", ").length;
       return `${columnCount} column${columnCount > 1 ? "s" : ""} selected`;
     }
     default:
@@ -94,4 +92,3 @@ export default function SelectionSummary({
     </div>
   );
 }
-
