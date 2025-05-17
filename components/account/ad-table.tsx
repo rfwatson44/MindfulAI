@@ -1,6 +1,4 @@
-"use client";
-
-import { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Table,
   TableBody,
@@ -33,86 +31,84 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [startX, setStartX] = useState(0);
   const [scrollStartLeft, setScrollStartLeft] = useState(0);
-  const [thumbWidth, setThumbWidth] = useState(100);
-  const [lastScrollTime, setLastScrollTime] = useState(0);
   const [scrollVelocity, setScrollVelocity] = useState(0);
+  const [lastScrollTime, setLastScrollTime] = useState(0);
+  const [scrollMomentum, setScrollMomentum] = useState(0);
   
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const scrollbarRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLDivElement>(null);
-  const scrollAnimationRef = useRef<number>();
+  const animationFrameRef = useRef<number>();
 
   useEffect(() => {
     const updateTableWidth = () => {
-      const containerWidth = window.innerWidth - 288; // 288px is sidebar width
-      setTableWidth(Math.max(containerWidth - 48, 800)); // Minimum width of 800px
+      const containerWidth = window.innerWidth - 288; // Sidebar width
+      setTableWidth(Math.max(containerWidth - 48, 800)); // Min width 800px
     };
 
     updateTableWidth();
     window.addEventListener('resize', updateTableWidth);
     
     return () => {
-      window.addEventListener('resize', updateTableWidth);
-      if (scrollAnimationRef.current) {
-        cancelAnimationFrame(scrollAnimationRef.current);
+      window.removeEventListener('resize', updateTableWidth);
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
       }
     };
   }, []);
 
-  useEffect(() => {
-    if (tableContainerRef.current && scrollbarRef.current) {
-      const { scrollWidth, clientWidth } = tableContainerRef.current;
-      const scrollbarWidth = scrollbarRef.current.clientWidth;
-      const ratio = clientWidth / scrollWidth;
-      const newThumbWidth = Math.max(40, Math.floor(scrollbarWidth * ratio));
-      setThumbWidth(newThumbWidth);
-    }
-  }, [activeMetrics, filteredData]);
-
   const handleScroll = (e?: WheelEvent) => {
-    if (!tableContainerRef.current || !scrollbarRef.current) return;
+    if (!tableContainerRef.current) return;
 
     if (e) {
+      e.preventDefault();
+      
       const now = Date.now();
       const timeDelta = now - lastScrollTime;
-      const sensitivity = 2.5; // Increased sensitivity for smoother scrolling
+      const sensitivity = 2.5;
       
-      // Calculate scroll velocity with decay
+      // Calculate new velocity with smooth acceleration
       const newVelocity = (Math.abs(e.deltaX) / timeDelta) * sensitivity;
       const smoothedVelocity = scrollVelocity * 0.8 + newVelocity * 0.2;
+      
+      // Update momentum
+      const direction = e.deltaX > 0 ? 1 : -1;
+      const newMomentum = smoothedVelocity * direction;
+      
       setScrollVelocity(smoothedVelocity);
+      setScrollMomentum(newMomentum);
       setLastScrollTime(now);
 
-      // Apply momentum scrolling
-      const momentum = smoothedVelocity * (e.deltaX > 0 ? 1 : -1);
-      const targetScroll = tableContainerRef.current.scrollLeft + momentum;
-      
-      // Smooth scroll animation
+      // Apply smooth scrolling
       const animate = () => {
         if (!tableContainerRef.current) return;
         
         const currentScroll = tableContainerRef.current.scrollLeft;
-        const diff = targetScroll - currentScroll;
-        const delta = diff * 0.15;
+        const maxScroll = tableContainerRef.current.scrollWidth - tableContainerRef.current.clientWidth;
+        const targetScroll = Math.max(0, Math.min(currentScroll + scrollMomentum, maxScroll));
         
-        if (Math.abs(delta) > 0.5) {
-          tableContainerRef.current.scrollLeft += delta;
-          scrollAnimationRef.current = requestAnimationFrame(animate);
+        if (Math.abs(targetScroll - currentScroll) > 0.1) {
+          tableContainerRef.current.scrollLeft = currentScroll + (targetScroll - currentScroll) * 0.15;
+          setScrollMomentum(scrollMomentum * 0.95); // Decay momentum
+          animationFrameRef.current = requestAnimationFrame(animate);
         }
       };
-      
-      if (scrollAnimationRef.current) {
-        cancelAnimationFrame(scrollAnimationRef.current);
+
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
       }
-      scrollAnimationRef.current = requestAnimationFrame(animate);
+      animationFrameRef.current = requestAnimationFrame(animate);
     }
 
-    const { scrollLeft, scrollWidth, clientWidth } = tableContainerRef.current;
-    const scrollRatio = scrollLeft / (scrollWidth - clientWidth);
-    const scrollbarWidth = scrollbarRef.current.clientWidth;
-    const maxScroll = scrollbarWidth - thumbWidth;
-    
-    setScrollLeft(scrollRatio * maxScroll);
+    // Update custom scrollbar position
+    if (scrollbarRef.current && thumbRef.current) {
+      const { scrollLeft, scrollWidth, clientWidth } = tableContainerRef.current;
+      const scrollRatio = scrollLeft / (scrollWidth - clientWidth);
+      const scrollbarWidth = scrollbarRef.current.clientWidth;
+      const thumbWidth = thumbRef.current.clientWidth;
+      const maxScroll = scrollbarWidth - thumbWidth;
+      setScrollLeft(scrollRatio * maxScroll);
+    }
   };
 
   useEffect(() => {
@@ -120,15 +116,14 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     if (!container) return;
 
     const handleWheel = (e: WheelEvent) => {
-      if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5) {
-        e.preventDefault();
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
         handleScroll(e);
       }
     };
 
     container.addEventListener('wheel', handleWheel, { passive: false });
     return () => container.removeEventListener('wheel', handleWheel);
-  }, [scrollVelocity, lastScrollTime]);
+  }, [scrollVelocity, lastScrollTime, scrollMomentum]);
 
   const handleThumbMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -143,6 +138,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     const scrollbarRect = scrollbarRef.current.getBoundingClientRect();
     const clickPosition = e.clientX - scrollbarRect.left;
     const scrollbarWidth = scrollbarRect.width;
+    const thumbWidth = 100; // Fixed thumb width
     const halfThumbWidth = thumbWidth / 2;
     
     const targetScrollLeft = Math.max(0, Math.min(clickPosition - halfThumbWidth, scrollbarWidth - thumbWidth));
@@ -160,6 +156,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
 
       const scrollbarRect = scrollbarRef.current.getBoundingClientRect();
       const scrollbarWidth = scrollbarRect.width;
+      const thumbWidth = 100; // Fixed thumb width
       const maxScroll = scrollbarWidth - thumbWidth;
       const delta = e.clientX - startX;
       const newScrollLeft = Math.max(0, Math.min(scrollStartLeft + delta, maxScroll));
@@ -186,7 +183,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, startX, scrollStartLeft, thumbWidth]);
+  }, [isDragging, startX, scrollStartLeft]);
 
   useMemo(() => {
     setFilteredData(data);
@@ -480,9 +477,8 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         >
           <div
             ref={thumbRef}
-            className="absolute h-full bg-muted-foreground/50 rounded hover:bg-muted-foreground/70 active:bg-muted-foreground/90 transition-all cursor-grab active:cursor-grabbing"
+            className="absolute h-full w-24 bg-muted-foreground/50 rounded hover:bg-muted-foreground/70 active:bg-muted-foreground/90 transition-all cursor-grab active:cursor-grabbing"
             style={{
-              width: `${thumbWidth}px`,
               transform: `translateX(${scrollLeft}px)`,
             }}
             onMouseDown={handleThumbMouseDown}
