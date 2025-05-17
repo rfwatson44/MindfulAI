@@ -27,7 +27,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   const [filteredData, setFilteredData] = useState<Ad[]>(data);
   const [selectedCells, setSelectedCells] = useState<Array<{ row: number; col: number }>>([]);
   const [showAnalyzeButton, setShowAnalyzeButton] = useState(false);
-  const [selectionStart, setSelectionStart] = useState<{ row: number; col: number } | null>(null);
 
   // Update filtered data when data changes
   useMemo(() => {
@@ -66,12 +65,8 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   ) => {
     event.preventDefault();
     
-    if (!selectionStart) {
-      // Start new selection
-      setSelectionStart({ row: rowIndex, col: colIndex });
-      setSelectedCells([{ row: rowIndex, col: colIndex }]);
-    } else if (event.metaKey || event.ctrlKey) {
-      // Add to or remove from selection
+    if (event.metaKey || event.ctrlKey) {
+      // Toggle individual cell selection
       const cellIndex = selectedCells.findIndex(
         cell => cell.row === rowIndex && cell.col === colIndex
       );
@@ -84,20 +79,8 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
         setSelectedCells([...selectedCells, { row: rowIndex, col: colIndex }]);
       }
     } else {
-      // Complete selection range
-      const startRow = Math.min(selectionStart.row, rowIndex);
-      const endRow = Math.max(selectionStart.row, rowIndex);
-      const startCol = Math.min(selectionStart.col, colIndex);
-      const endCol = Math.max(selectionStart.col, colIndex);
-      
-      const newSelection = [];
-      for (let r = startRow; r <= endRow; r++) {
-        for (let c = startCol; c <= endCol; c++) {
-          newSelection.push({ row: r, col: c });
-        }
-      }
-      setSelectedCells(newSelection);
-      setSelectionStart(null);
+      // Single cell selection
+      setSelectedCells([{ row: rowIndex, col: colIndex }]);
     }
     
     setShowAnalyzeButton(true);
@@ -154,29 +137,20 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
 
     const allMetrics = [{ id: "name", name: "Ad Name" }, ...activeMetrics];
     
-    // Get unique selected rows and columns
-    const selectedRows = Array.from(new Set(selectedCells.map(cell => cell.row)));
-    const selectedColumns = Array.from(new Set(selectedCells.map(cell => cell.col)));
+    // Get unique rows and columns
+    const uniqueRows = Array.from(new Set(selectedCells.map(cell => cell.row)));
+    const uniqueCols = Array.from(new Set(selectedCells.map(cell => cell.col)));
 
-    // Single cell selection
-    if (selectedRows.length === 1 && selectedColumns.length === 1) {
-      const ad = filteredData[selectedRows[0]];
-      const metric = allMetrics[selectedColumns[0]];
-      onSelectionChange({
-        type: "cell",
-        adId: ad.id,
-        adName: ad.name,
-        metricId: metric.id,
-        metricName: metric.name,
-        value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
-      });
-      return;
-    }
+    // Check if selection represents full columns
+    const isColumnSelection = uniqueRows.length === filteredData.length;
+    
+    // Check if selection represents full rows
+    const isRowSelection = uniqueCols.length === allMetrics.length;
 
-    // Column selection
-    if (selectedRows.length === filteredData.length) {
-      const selectedMetrics = selectedColumns.map(colIndex => allMetrics[colIndex]);
-      const values = selectedMetrics.flatMap(metric =>
+    if (isColumnSelection && !isRowSelection) {
+      // Column selection
+      const metrics = uniqueCols.map(colIndex => allMetrics[colIndex]);
+      const values = metrics.flatMap(metric => 
         filteredData.map(ad => ({
           adId: ad.id,
           adName: ad.name,
@@ -185,34 +159,47 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
           value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
         }))
       );
-
+      
       onSelectionChange({
         type: "column",
-        metricId: selectedMetrics[0].id,
-        metricName: selectedMetrics.map(m => m.name).join(", "),
+        metricId: metrics[0].id,
+        metricName: metrics.map(m => m.name).join(", "),
         values,
       });
-      return;
-    }
-
-    // Row selection
-    const selectedAds = selectedRows.map(rowIndex => filteredData[rowIndex]);
-    const values = selectedAds.flatMap(ad =>
-      allMetrics.map(metric => ({
+    } else if (isRowSelection && !isColumnSelection) {
+      // Row selection
+      const ads = uniqueRows.map(rowIndex => filteredData[rowIndex]);
+      const values = ads.flatMap(ad =>
+        allMetrics.map(metric => ({
+          adId: ad.id,
+          adName: ad.name,
+          metricId: metric.id,
+          metricName: metric.name,
+          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
+        }))
+      );
+      
+      onSelectionChange({
+        type: "row",
+        adId: ads[0].id,
+        adName: ads.map(ad => ad.name).join(", "),
+        values,
+      });
+    } else {
+      // Cell selection
+      const cell = selectedCells[0];
+      const ad = filteredData[cell.row];
+      const metric = allMetrics[cell.col];
+      
+      onSelectionChange({
+        type: "cell",
         adId: ad.id,
         adName: ad.name,
         metricId: metric.id,
         metricName: metric.name,
         value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
-      }))
-    );
-
-    onSelectionChange({
-      type: "row",
-      adId: selectedAds[0].id,
-      adName: selectedAds.map(ad => ad.name).join(", "),
-      values,
-    });
+      });
+    }
   };
 
   // Handle analyze button click
@@ -355,7 +342,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   );
 }
 
-// Helper function to format metric values
+// Helper function to format values
 function formatValue(value: any, metricId: string): string {
   if (value === undefined || value === null) return "--";
   
