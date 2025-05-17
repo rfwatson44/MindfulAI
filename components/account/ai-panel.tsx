@@ -11,13 +11,12 @@ function getColumnDistribution(selection: SelectedRange): string {
   if (!values.length) return "No valid values to analyze.";
   
   const avg = values.reduce((a, b) => a + b, 0) / values.length;
-  const sorted = [...values].sort((a, b) => a - b);
-  const median = sorted[Math.floor(sorted.length / 2)];
+  const max = Math.max(...values);
+  const min = Math.min(...values);
   
-  if (Math.abs(avg - median) / avg > 0.2) {
-    return "The values show significant variation with some outliers.";
-  } else {
-    return "The values are fairly evenly distributed.";
-  }
+  const aboveAvg = values.filter(v => v > avg).length;
+  const belowAvg = values.filter(v => v < avg).length;
+  
+  return `${aboveAvg} values are above average and ${belowAvg} are below average. The range spans from ${formatValue(min, selection.metricId)} to ${formatValue(max, selection.metricId)}.`;
 }
 ```
