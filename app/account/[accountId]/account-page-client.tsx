@@ -49,7 +49,7 @@ export function AccountPageClient({ account, initialAdsData }: AccountPageClient
         </div>
         
         <div className="relative flex flex-1 overflow-hidden">
-          <div className="flex-1 overflow-auto">
+          <div className="flex-1 overflow-hidden">
             <AdTable 
               data={adsData} 
               onSelectionChange={handleSelectionChange}
