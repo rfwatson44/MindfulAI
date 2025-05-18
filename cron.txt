@@ -1,0 +1,20 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/daily-metrics?secret=${CRON_SECRET}",
+      "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/cron/weekly-details?secret=${CRON_SECRET}",
+      "schedule": "0 2 * * 1"
+    },
+    {
+      "path": "/api/cron/marketing-ping?secret=${CRON_SECRET}",
+      "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/cron/meta-daily-sync?secret=${CRON_SECRET}",
+      "schedule": "0 3 * * *"
+    }
+  ]
+}

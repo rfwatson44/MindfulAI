@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/meta-marketing?secret=6ccb47c549aeab693bf17b45aa039c16",
+      "schedule": "0 0 * * *"
+    }
+  ]
+}
