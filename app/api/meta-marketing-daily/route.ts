@@ -7,6 +7,10 @@ import {
 import { createClient } from "@/utils/supabase/server";
 import { SupabaseClient } from "@supabase/supabase-js";
 
+// Mark route as dynamic
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 // Import these types for type checking but not for actual usage
 
 // Helper functions to safely parse strings to numbers
