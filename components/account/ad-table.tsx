@@ -320,7 +320,8 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       onSelectionChange({
         type: "cell",
         ...selections[0],
-        additionalSelections: selections.slice(1),
+        additionalSelections:
+          selections.length > 1 ? selections.slice(1) : undefined,
       });
     }
   };

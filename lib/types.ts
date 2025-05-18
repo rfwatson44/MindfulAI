@@ -75,6 +75,13 @@ export type SelectedRange =
       metricId: string;
       metricName: string;
       value: any;
+      additionalSelections?: {
+        adId: string;
+        adName: string;
+        metricId: string;
+        metricName: string;
+        value: any;
+      }[];
     }
   | {
       type: "row";
