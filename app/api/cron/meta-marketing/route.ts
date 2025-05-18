@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { headers } from "next/headers";
 
+export const dynamic = "force-dynamic";
+
 // Rate limiting configuration
 const RATE_LIMIT = {
   DELAY_BETWEEN_ACCOUNTS: 5000, // 5 seconds between account processing
