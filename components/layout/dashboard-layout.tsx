@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { forwardRef, ReactNode } from "react";
 import { Sidebar } from "@/components/layout/sidebar";
 
 interface DashboardLayoutProps {

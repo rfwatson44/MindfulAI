@@ -11,13 +11,12 @@ import { Ad, AdType, SelectedRange } from "@/lib/types";
 
 interface AccountPageClientProps {
   account: any; // Replace with your account type
+  initialAdsData: Ad[];
 }
 
-export function AccountPageClient({ account }: AccountPageClientProps) {
+export function AccountPageClient({ account, initialAdsData }: AccountPageClientProps) {
   const [activeTab, setActiveTab] = useState<AdType>("static");
-  const [adsData, setAdsData] = useState<Ad[]>(
-    filterAccountAds(account.id, activeTab)
-  );
+  const [adsData, setAdsData] = useState<Ad[]>(initialAdsData);
   const [selectedRange, setSelectedRange] = useState<SelectedRange | null>(null);
   const [isAIPanelOpen, setIsAIPanelOpen] = useState(false);
   
@@ -50,7 +49,7 @@ export function AccountPageClient({ account }: AccountPageClientProps) {
         </div>
         
         <div className="relative flex flex-1 overflow-hidden">
-          <div className="flex-1 overflow-auto">
+          <div className="flex-1 overflow-hidden">
             <AdTable 
               data={adsData} 
               onSelectionChange={handleSelectionChange}
