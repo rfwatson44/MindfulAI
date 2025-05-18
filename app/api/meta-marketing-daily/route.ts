@@ -7,10 +7,6 @@ import {
 import { createClient } from "@/utils/supabase/server";
 import { SupabaseClient } from "@supabase/supabase-js";
 
-// Mark route as dynamic
-export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
-
 // Import these types for type checking but not for actual usage
 
 // Helper functions to safely parse strings to numbers
@@ -340,6 +336,17 @@ async function withRateLimitRetry<T>(
   }
 }
 
+// Helper function to get date range for last 24 hours
+function getLast24HoursDateRange() {
+  const endDate = new Date();
+  const startDate = new Date(endDate);
+  startDate.setHours(startDate.getHours() - 24);
+  return {
+    since: startDate.toISOString().split("T")[0],
+    until: endDate.toISOString().split("T")[0],
+  };
+}
+
 // Helper function to get insights with rate limiting and error handling
 async function getInsights(
   entity: InsightCapableEntity,
@@ -348,7 +355,7 @@ async function getInsights(
 ): Promise<InsightResult | null> {
   return withRateLimitRetry(
     async () => {
-      const dateRange = getLast6MonthsDateRange();
+      const dateRange = getLast24HoursDateRange();
       console.log(
         "Fetching insights for entity:",
         entity.id,
@@ -397,17 +404,6 @@ async function getInsights(
   );
 }
 
-// Helper function to get date range for last 6 months
-function getLast6MonthsDateRange() {
-  const endDate = new Date();
-  const startDate = new Date();
-  startDate.setMonth(startDate.getMonth() - 6);
-  return {
-    since: startDate.toISOString().split("T")[0],
-    until: endDate.toISOString().split("T")[0],
-  };
-}
-
 // GET handler for 24-hour data
 async function get24HourData(accountId: string, supabase: any) {
   try {
@@ -416,9 +412,9 @@ async function get24HourData(accountId: string, supabase: any) {
     api.setDebug(true);
     const account = new AdAccount(accountId);
 
-    const dateRange = getLast6MonthsDateRange();
+    const dateRange = getLast24HoursDateRange();
     console.log(
-      `Fetching 6 months insights from ${dateRange.since} to ${dateRange.until}`
+      `Fetching 24 hour insights from ${dateRange.since} to ${dateRange.until}`
     );
 
     // Get account info with rate limiting
