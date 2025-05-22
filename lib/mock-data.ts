@@ -80,7 +80,11 @@ export const DEFAULT_METRICS: Metric[] = [
   { id: "clicks", name: "Clicks" },
   { id: "ctr", name: "CTR" },
   { id: "conversions", name: "Conversions" },
+<<<<<<< HEAD
   { id: "costPerResult", name: "Cost per Conversion" },
+=======
+  { id: "cost_per_conversion", name: "Cost per Conversion" },
+>>>>>>> main
 ];
 
 export const OPTIONAL_METRICS: Metric[] = [

@@ -47,7 +47,11 @@ export function MetricsSelector({
             </Button>
           </Badge>
         ))}
+<<<<<<< HEAD
+        
+=======
 
+>>>>>>> main
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm" className="h-7 gap-1">
@@ -75,4 +79,8 @@ export function MetricsSelector({
       </div>
     </div>
   );
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> main
