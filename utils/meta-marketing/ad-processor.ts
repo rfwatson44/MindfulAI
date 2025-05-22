@@ -1,5 +1,4 @@
 import { SupabaseClient } from "@supabase/supabase-js";
-import { AdCreative } from "facebook-nodejs-business-sdk";
 import {
   InsightCapableEntity,
   InsightResult,
@@ -9,6 +8,10 @@ import {
   safeParseInt,
   safeParseFloat,
 } from "./helpers";
+import {
+  fetchCreativeDetails,
+  determineActualCreativeType,
+} from "./creative-management";
 
 /**
  * Process an ad and save it to the database
@@ -55,48 +58,11 @@ export async function processAd(
       return;
     }
 
-    // Get creative details if creative exists
+    // Get creative details if creative exists using enhanced fetching
     let creativeDetails = null;
     if (ad.creative && ad.creative.id) {
-      try {
-        // Use direct creative ID lookup
-        const creative = new AdCreative(ad.creative.id);
-        const details = await creative.read([
-          "id",
-          "name",
-          "title",
-          "body",
-          "object_type",
-          "thumbnail_url",
-          "image_url",
-          "video_id",
-          "url_tags",
-          "template_url",
-          "instagram_permalink_url",
-          "effective_object_story_id",
-          "asset_feed_spec",
-          "object_story_spec",
-          "platform_customizations",
-        ]);
-
-        if (details) {
-          creativeDetails = {
-            thumbnail_url: details.thumbnail_url || details.image_url,
-            creative_type: details.object_type,
-            asset_feed_spec: details.asset_feed_spec,
-            url_tags: details.url_tags,
-            template_url: details.template_url,
-            instagram_permalink_url: details.instagram_permalink_url,
-            effective_object_story_id: details.effective_object_story_id,
-          };
-        }
-      } catch (creativeError) {
-        console.error(
-          `Error fetching creative details for ad ${ad.id}:`,
-          creativeError
-        );
-        // Continue without creative details
-      }
+      // Use the enhanced fetching with intelligent fallbacks
+      creativeDetails = await fetchCreativeDetails(ad);
     }
 
     // First add to processedAds collection so it's returned to the client
@@ -138,8 +104,7 @@ export async function processAd(
       );
     }
 
-    // Add a small delay between ads
-    await delay(500);
+    // No need for additional delay since fetchCreativeDetails already adds appropriate delays
   } catch (adError) {
     console.error(`Error processing ad ${ad.id}:`, adError);
     if (adError instanceof Error) {

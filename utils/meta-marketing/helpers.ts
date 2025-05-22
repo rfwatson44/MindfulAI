@@ -239,8 +239,19 @@ export async function saveAdToDatabase(
         ? {
             thumbnail_url: creativeDetails.thumbnail_url,
             creative_type: creativeDetails.creative_type,
+            asset_feed_spec: creativeDetails.asset_feed_spec || "FETCH_FAILED",
+            url_tags: creativeDetails.url_tags,
+            template_url: creativeDetails.template_url,
+            instagram_permalink_url: creativeDetails.instagram_permalink_url,
+            effective_object_story_id:
+              creativeDetails.effective_object_story_id,
+            video_id: creativeDetails.video_id,
+            image_url: creativeDetails.image_url,
           }
-        : {}),
+        : {
+            // If ad has a creative ID but no creative details, set a fallback
+            ...(ad.creative?.id ? { asset_feed_spec: "FETCH_FAILED" } : {}),
+          }),
     };
 
     // Direct insertion
@@ -262,6 +273,8 @@ export async function saveAdToDatabase(
         ad_id: ad.id,
         name: ad.name,
         account_id: accountId,
+        // If ad has a creative ID, ensure we include asset_feed_spec
+        ...(ad.creative?.id ? { asset_feed_spec: "FETCH_FAILED" } : {}),
       };
 
       const { error: minError } = await supabase

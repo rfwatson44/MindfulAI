@@ -5,15 +5,15 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 
 export default function MetaMarketingTest() {
   const [accountId, setAccountId] = useState("");
-  const [selectedRoute, setSelectedRoute] = useState("6-month");
+  const [selectedTimeframe, setSelectedTimeframe] = useState("6-month");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [data, setData] = useState<any>(null);
 
   // Define the fetch functions for different data types
-  const fetchAccountInfo = async (baseUrl: string, accountId: string) => {
+  const fetchAccountInfo = async (accountId: string, timeframe: string) => {
     const response = await fetch(
-      `${baseUrl}?action=getAccountInfo&accountId=${accountId}`
+      `/api/meta-marketing-daily?action=getAccountInfo&accountId=${accountId}&timeframe=${timeframe}`
     );
     if (!response.ok) {
       const errorData = await response.json();
@@ -22,20 +22,21 @@ export default function MetaMarketingTest() {
     return response.json();
   };
 
-  const fetch24HourData = async (baseUrl: string, accountId: string) => {
+  const fetchData = async (accountId: string, timeframe: string) => {
+    // Always use get24HourData for consistency with the backend
     const response = await fetch(
-      `${baseUrl}?action=get24HourData&accountId=${accountId}`
+      `/api/meta-marketing-daily?action=get24HourData&accountId=${accountId}&timeframe=${timeframe}`
     );
     if (!response.ok) {
       const errorData = await response.json();
-      throw new Error(errorData.error || "Failed to fetch 24-hour data");
+      throw new Error(errorData.error || "Failed to fetch data");
     }
     return response.json();
   };
 
-  const fetchCampaigns = async (baseUrl: string, accountId: string) => {
+  const fetchCampaigns = async (accountId: string, timeframe: string) => {
     const response = await fetch(
-      `${baseUrl}?action=getCampaigns&accountId=${accountId}`
+      `/api/meta-marketing-daily?action=getCampaigns&accountId=${accountId}&timeframe=${timeframe}`
     );
     if (!response.ok) {
       const errorData = await response.json();
@@ -51,29 +52,18 @@ export default function MetaMarketingTest() {
     setError(null);
 
     try {
-      const baseUrl =
-        selectedRoute === "6-month"
-          ? "/api/meta-marketing"
-          : "/api/meta-marketing-daily";
+      // Always use the enhanced api/meta-marketing-daily endpoint
+      // but with different timeframe parameter
+      const timeframeParam = selectedTimeframe === "24h" ? "24h" : "6-month";
 
-      if (selectedRoute === "daily") {
-        // For daily route, we use get24HourData which fetches everything
-        const dailyData = await fetch24HourData(baseUrl, accountId);
+      if (selectedTimeframe === "24h") {
+        // For 24h timeframe, use get24HourData
+        const dailyData = await fetchData(accountId, timeframeParam);
         setData(dailyData);
       } else {
-        // For 6-month route, fetch each type of data separately
-        const [accountInfo, campaigns] = await Promise.all([
-          fetchAccountInfo(baseUrl, accountId),
-          fetchCampaigns(baseUrl, accountId),
-        ]);
-
-        setData({
-          result: {
-            accountInfo: accountInfo.result,
-            campaigns: campaigns.result.campaigns,
-          },
-          dateRange: accountInfo.dateRange,
-        });
+        // For 6-month timeframe, we now also use the same approach but with the 6-month timeframe parameter
+        const dailyData = await fetchData(accountId, timeframeParam);
+        setData(dailyData);
       }
     } catch (err) {
       setError(
@@ -123,30 +113,30 @@ export default function MetaMarketingTest() {
 
           <div>
             <label className="block text-sm font-medium mb-1">
-              Select Sync Type
+              Select Timeframe
             </label>
             <div className="flex gap-4">
               <label className="flex items-center">
                 <input
                   type="radio"
-                  name="syncType"
+                  name="timeframe"
                   value="6-month"
-                  checked={selectedRoute === "6-month"}
-                  onChange={() => setSelectedRoute("6-month")}
+                  checked={selectedTimeframe === "6-month"}
+                  onChange={() => setSelectedTimeframe("6-month")}
                   className="mr-2"
                 />
-                6-Month Sync
+                6-Month Data
               </label>
               <label className="flex items-center">
                 <input
                   type="radio"
-                  name="syncType"
-                  value="daily"
-                  checked={selectedRoute === "daily"}
-                  onChange={() => setSelectedRoute("daily")}
+                  name="timeframe"
+                  value="24h"
+                  checked={selectedTimeframe === "24h"}
+                  onChange={() => setSelectedTimeframe("24h")}
                   className="mr-2"
                 />
-                Daily Sync (Last 24h)
+                Last 24 Hours
               </label>
             </div>
           </div>
@@ -188,6 +178,10 @@ export default function MetaMarketingTest() {
 
           <div className="mt-4">
             <h4 className="font-medium mb-2">Response Summary:</h4>
+            <div className="p-2 bg-blue-50 rounded mb-2">
+              <p className="text-blue-700">Timeframe: {selectedTimeframe}</p>
+            </div>
+
             {data.cached && (
               <div className="p-2 bg-blue-50 rounded mb-2">
                 <p className="text-blue-700">Data retrieved from cache</p>
