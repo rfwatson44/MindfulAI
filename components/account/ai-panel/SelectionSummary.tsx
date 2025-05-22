@@ -27,18 +27,12 @@ export default function SelectionSummary({
   selectedRange,
   isDetailsOpen,
   onToggleDetails,
-<<<<<<< HEAD
-=======
   onAnalyze = () => {},
->>>>>>> main
 }: {
   selectedRange: SelectedRange | null;
   isDetailsOpen: boolean;
   onToggleDetails: () => void;
-<<<<<<< HEAD
-=======
   onAnalyze?: () => void;
->>>>>>> main
 }) {
   if (!selectedRange) {
     return (
@@ -50,11 +44,7 @@ export default function SelectionSummary({
 
   return (
     <div className="rounded-lg border bg-muted/30 p-4">
-<<<<<<< HEAD
-      <div className="flex items-center justify-between">
-=======
       <div className="flex items-center justify-between mb-2">
->>>>>>> main
         <div className="font-medium">
           {getSelectionSummary(selectedRange)}
         </div>
@@ -67,10 +57,6 @@ export default function SelectionSummary({
           {isDetailsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
         </Button>
       </div>
-<<<<<<< HEAD
-=======
-
->>>>>>> main
       {isDetailsOpen && (
         <div className="mt-2 text-sm text-muted-foreground">
           {selectedRange.type === "cell" && (

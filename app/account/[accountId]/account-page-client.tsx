@@ -79,23 +79,10 @@ export function AccountPageClient({ account, initialAdsData }: AccountPageClient
     // console.log('[AccountPageClient] selectedRange updated:', selectedRange);
   }, [selectedRange]);
   
->>>>>>> main
   
   // Handle tab change
   const handleTabChange = (type: AdType) => {
     setActiveTab(type);
-<<<<<<< HEAD
-    setAdsData(filterAccountAds(account.id, type));
-    setSelectedRange(null);
-  };
-  
-  // Handle selection change
-  const handleSelectionChange = (selection: SelectedRange | null) => {
-    setSelectedRange(selection);
-    if (selection) {
-      setIsAIPanelOpen(true);
-    }
-=======
     const filtered = filterAccountAds(account.id, type);
     console.log('[AccountPageClient] filterAccountAds result:', filtered);
     // Prevent infinite loop: only setAdsData if different
@@ -117,7 +104,6 @@ export function AccountPageClient({ account, initialAdsData }: AccountPageClient
     // console.log('[AdTable] onSelectionChange called with:', selection);
     setSelectedRange(selection);
     // Do NOT auto-open the panel; let AdTable control it via Analyze Selected button
->>>>>>> main
   };
   
   // Toggle AI panel
@@ -126,32 +112,6 @@ export function AccountPageClient({ account, initialAdsData }: AccountPageClient
   };
 
   return (
-<<<<<<< HEAD
-    <DashboardLayout>
-      <div className="flex h-screen flex-col">
-        <div className="border-b border-border p-6 md:p-8">
-          <AccountHeader account={account} />
-          <AccountTabs activeTab={activeTab} onTabChange={handleTabChange} />
-        </div>
-        
-        <div className="relative flex flex-1 overflow-hidden">
-          <div className="flex-1 overflow-hidden">
-            <AdTable 
-              data={adsData} 
-              onSelectionChange={handleSelectionChange}
-            />
-          </div>
-          
-          <AIPanel 
-            isOpen={isAIPanelOpen} 
-            onToggle={toggleAIPanel} 
-            selectedRange={selectedRange}
-            adsData={adsData}
-          />
-        </div>
-      </div>
-    </DashboardLayout>
-=======
     <div>
       <div className="border-b border-border p-6 md:p-8">
         <AccountHeader account={account} />
@@ -183,6 +143,5 @@ export function AccountPageClient({ account, initialAdsData }: AccountPageClient
         />
       </div>
     </div>
->>>>>>> main
   );
 }

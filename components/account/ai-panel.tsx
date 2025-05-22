@@ -1,9 +1,6 @@
 "use client";
 
 import { useState } from "react";
-<<<<<<< HEAD
-import { X, Sparkles, BarChart2, Table as TableIcon, MessageSquare, ChevronDown, ChevronUp } from "lucide-react";
-=======
 import {
   X,
   Sparkles,
@@ -13,7 +10,6 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
->>>>>>> main
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -34,22 +30,10 @@ import SummarizeTab from "./ai-panel/SummarizeTab";
 
 interface AIPanelProps {
   isOpen: boolean;
-<<<<<<< HEAD
-  onToggle: () => void;
-=======
->>>>>>> main
   selectedRange: SelectedRange | null;
   adsData: Ad[];
 }
 
-<<<<<<< HEAD
-export function AIPanel({ 
-  isOpen, 
-  onToggle, 
-  selectedRange,
-  adsData 
-}: AIPanelProps) {
-=======
 import { SheetTitle } from "@/components/ui/sheet";
 
 export function AIPanel({
@@ -58,18 +42,10 @@ export function AIPanel({
   selectedRange,
   adsData,
 }: AIPanelProps & { onOpenChange: (open: boolean) => void }) {
->>>>>>> main
   const [activeAction, setActiveAction] = useState("summarize");
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
   return (
-<<<<<<< HEAD
-    <Sheet open={isOpen} onOpenChange={onToggle}>
-      <SheetContent 
-        className="fixed top-0 right-0 h-screen max-h-screen w-full max-w-2xl border-l p-0 sm:max-w-4xl bg-background z-50"
-        side="right"
-      >
-=======
     <Sheet open={isOpen} onOpenChange={onOpenChange}>
       <SheetContent
         className="fixed top-0 right-0 h-screen max-h-screen w-full max-w-2xl border-l p-0 sm:max-w-4xl bg-background z-50"
@@ -77,28 +53,10 @@ export function AIPanel({
 
       >
         {/* <SheetTitle>AI Analysis</SheetTitle> */}
->>>>>>> main
         <div className="overflow-y-auto h-full w-full bg-white">
           <div className="flex items-center justify-between border-b p-4">
             <div className="flex items-center gap-2">
               <Sparkles className="h-5 w-5 text-primary" />
-<<<<<<< HEAD
-              <h3 className="text-lg font-semibold">AI Analysis</h3>
-            </div>
-          </div>
-          
-          <div className="p-4">
-            <SelectionSummary 
-              selectedRange={selectedRange} 
-              isDetailsOpen={isDetailsOpen}
-              onToggleDetails={() => setIsDetailsOpen(!isDetailsOpen)}
-            />
-          </div>
-          
-          <Separator />
-          
-          <Tabs defaultValue={activeAction} className="flex-1" onValueChange={setActiveAction}>
-=======
               <span className="text-lg font-semibold">AI Analysis</span>
             </div>
           </div>
@@ -124,7 +82,6 @@ export function AIPanel({
             className="flex-1"
             onValueChange={setActiveAction}
           >
->>>>>>> main
             <div className="border-b">
               <TabsList className="mx-4 my-2 grid w-auto grid-cols-4">
                 <TabsTrigger value="summarize">
@@ -145,19 +102,6 @@ export function AIPanel({
                 </TabsTrigger>
               </TabsList>
             </div>
-<<<<<<< HEAD
-            
-            <div className="flex-1 overflow-y-auto max-h-[calc(100vh-64px)]">
-              <div className="p-4">
-                <TabsContent value="summarize" className="mt-0">
-                  <SummarizeTab selectedRange={selectedRange} adsData={adsData} />
-                </TabsContent>
-                
-                <TabsContent value="chart" className="mt-0">
-                  <ChartTab selectedRange={selectedRange} />
-                </TabsContent>
-                
-=======
 
             <div className="flex-1 overflow-y-auto max-h-[calc(100vh-64px)]">
               <div className="p-4">
@@ -172,18 +116,12 @@ export function AIPanel({
                   <ChartTab selectedRange={selectedRange} />
                 </TabsContent>
 
->>>>>>> main
                 <TabsContent value="table" className="mt-0">
                   <div className="flex h-full flex-col items-center justify-center text-center text-muted-foreground">
                     <TableIcon className="mb-2 h-8 w-8 text-muted-foreground/70" />
                     <p>Table view coming soon</p>
                   </div>
                 </TabsContent>
-<<<<<<< HEAD
-                
-=======
-
->>>>>>> main
                 <TabsContent value="ask" className="mt-0">
                   <div className="flex h-full flex-col items-center justify-center text-center text-muted-foreground">
                     <MessageSquare className="mb-2 h-8 w-8 text-muted-foreground/70" />
@@ -197,8 +135,4 @@ export function AIPanel({
       </SheetContent>
     </Sheet>
   );
-<<<<<<< HEAD
 }
-=======
-}
->>>>>>> main

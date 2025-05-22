@@ -11,12 +11,7 @@
 # next.js
 /.next/
 /out/
-
-<<<<<<< HEAD
-=======
 .cursorrules
-
->>>>>>> main
 # production
 /build
 

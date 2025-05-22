@@ -4,8 +4,6 @@ import { twMerge } from 'tailwind-merge';
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
-<<<<<<< HEAD
-=======
 
 /**
  * Safely parses conversion data from ads, handling both object and JSON string input.
@@ -53,4 +51,3 @@ export function formatValue(value: any, metricId: string | undefined): string {
 
   return isMonetary ? `$${formattedValue}` : formattedValue;
 }
->>>>>>> main
