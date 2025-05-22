@@ -12,6 +12,7 @@ import {
   LineChart,
   Line,
 } from "recharts";
+import HistogramChart from "./histogram-chart";
 import { BarChart2 } from "lucide-react";
 import { SelectedRange } from "@/lib/types";
 import React, { useState, CSSProperties } from "react";
@@ -21,7 +22,7 @@ export default function ChartTab({
 }: {
   selectedRange: SelectedRange | null;
 }) {
-  const [chartType, setChartType] = useState<"bar" | "line">("bar");
+  const [chartType, setChartType] = useState<"bar" | "line" | "histogram">("bar");
   const [sortType, setSortType] = useState<
     "value-desc" | "value-asc" | "name-asc" | "name-desc"
   >("value-desc");
@@ -226,6 +227,14 @@ export default function ChartTab({
           >
             Line
           </button>
+          {selectedRange.type === "column" && chartData.length > 50 && barKeys.length === 1 && (
+            <button
+              style={buttonStyle(chartType === "histogram")}
+              onClick={() => setChartType("histogram")}
+            >
+              Histogram
+            </button>
+          )}
         </div>
         <select
           style={selectStyle}
@@ -248,103 +257,111 @@ export default function ChartTab({
       </p>
       {/* Chart */}
       <div style={{ width: "100%", height: 340, padding: "0 8px" }}>
-        <ResponsiveContainer width="100%" height="100%">
-          {chartType === "bar" ? (
-            <BarChart
-              data={chartData}
-              margin={{ top: 24, right: 32, left: 24, bottom: 40 }}
-              barGap={8}
-              barCategoryGap={20}
-            >
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis
-                dataKey={xKey}
-                tick={{ fontSize: 12 }}
-                angle={-28}
-                textAnchor="end"
-                interval={0}
-                height={64}
-                tickFormatter={(v) =>
-                  String(v).length > 16 ? String(v).slice(0, 15) + "…" : v
-                }
-              />
-              <YAxis
-                tick={{ fontSize: 12 }}
-                label={{
-                  value: label,
-                  angle: -90,
-                  position: "insideLeft",
-                  fontSize: 12,
-                }}
-                tickFormatter={formatNumber}
-              />
-              <Tooltip
-                formatter={formatNumber}
-                labelFormatter={(l) => `Name: ${l}`}
-              />
-              <Legend wrapperStyle={{ fontSize: 13 }} />
-              {barKeys.map((barKey, idx) => (
-                <Bar
-                  key={barKey}
-                  dataKey={barKey}
-                  fill={["#2563eb", "#22c55e", "#f59e42", "#f43f5e"][idx % 4]}
-                  radius={[8, 8, 0, 0]}
-                  maxBarSize={40}
-                >
-                  <LabelList
-                    dataKey={barKey}
-                    position="top"
-                    formatter={formatNumber}
-                  />
-                </Bar>
-              ))}
-            </BarChart>
-          ) : (
-            <LineChart
-              data={chartData}
-              margin={{ top: 24, right: 32, left: 24, bottom: 40 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis
-                dataKey={xKey}
-                tick={{ fontSize: 12 }}
-                angle={-28}
-                textAnchor="end"
-                interval={0}
-                height={64}
-                tickFormatter={(v) =>
-                  String(v).length > 16 ? String(v).slice(0, 15) + "…" : v
-                }
-              />
-              <YAxis
-                tick={{ fontSize: 12 }}
-                label={{
-                  value: label,
-                  angle: -90,
-                  position: "insideLeft",
-                  fontSize: 12,
-                }}
-                tickFormatter={formatNumber}
-              />
-              <Tooltip
-                formatter={formatNumber}
-                labelFormatter={(l) => `Name: ${l}`}
-              />
-              <Legend wrapperStyle={{ fontSize: 13 }} />
-              {barKeys.map((barKey, idx) => (
-                <Line
-                  key={barKey}
-                  type="monotone"
-                  dataKey={barKey}
-                  stroke={["#2563eb", "#22c55e", "#f59e42", "#f43f5e"][idx % 4]}
-                  strokeWidth={3}
-                  dot={{ r: 4 }}
-                  activeDot={{ r: 7 }}
+        {chartType === "histogram" && selectedRange.type === "column" && chartData.length > 50 && barKeys.length === 1 ? (
+          <HistogramChart
+            data={chartData.map((row) => row[barKeys[0]])}
+            bins={20}
+            label={barKeys[0]}
+          />
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            {chartType === "bar" ? (
+              <BarChart
+                data={chartData}
+                margin={{ top: 24, right: 32, left: 24, bottom: 40 }}
+                barGap={8}
+                barCategoryGap={20}
+              >
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis
+                  dataKey={xKey}
+                  tick={{ fontSize: 12 }}
+                  angle={-28}
+                  textAnchor="end"
+                  interval={0}
+                  height={64}
+                  tickFormatter={(v) =>
+                    String(v).length > 16 ? String(v).slice(0, 15) + "…" : v
+                  }
                 />
-              ))}
-            </LineChart>
-          )}
-        </ResponsiveContainer>
+                <YAxis
+                  tick={{ fontSize: 12 }}
+                  label={{
+                    value: label,
+                    angle: -90,
+                    position: "insideLeft",
+                    fontSize: 12,
+                  }}
+                  tickFormatter={formatNumber}
+                />
+                <Tooltip
+                  formatter={formatNumber}
+                  labelFormatter={(l) => `Name: ${l}`}
+                />
+                <Legend wrapperStyle={{ fontSize: 13 }} />
+                {barKeys.map((barKey, idx) => (
+                  <Bar
+                    key={barKey}
+                    dataKey={barKey}
+                    fill={["#2563eb", "#22c55e", "#f59e42", "#f43f5e"][idx % 4]}
+                    radius={[8, 8, 0, 0]}
+                    maxBarSize={40}
+                  >
+                    <LabelList
+                      dataKey={barKey}
+                      position="top"
+                      formatter={formatNumber}
+                    />
+                  </Bar>
+                ))}
+              </BarChart>
+            ) : (
+              <LineChart
+                data={chartData}
+                margin={{ top: 24, right: 32, left: 24, bottom: 40 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis
+                  dataKey={xKey}
+                  tick={{ fontSize: 12 }}
+                  angle={-28}
+                  textAnchor="end"
+                  interval={0}
+                  height={64}
+                  tickFormatter={(v) =>
+                    String(v).length > 16 ? String(v).slice(0, 15) + "…" : v
+                  }
+                />
+                <YAxis
+                  tick={{ fontSize: 12 }}
+                  label={{
+                    value: label,
+                    angle: -90,
+                    position: "insideLeft",
+                    fontSize: 12,
+                  }}
+                  tickFormatter={formatNumber}
+                />
+                <Tooltip
+                  formatter={formatNumber}
+                  labelFormatter={(l) => `Name: ${l}`}
+                />
+                <Legend wrapperStyle={{ fontSize: 13 }} />
+                {barKeys.map((barKey, idx) => (
+                  <Line
+                    key={barKey}
+                    type="monotone"
+                    dataKey={barKey}
+                    stroke={["#2563eb", "#22c55e", "#f59e42", "#f43f5e"][idx % 4]}
+                    strokeWidth={3}
+                    dot={{ r: 4 }}
+                    activeDot={{ r: 7 }}
+                  />
+                ))}
+              </LineChart>
+            )}
+          </ResponsiveContainer>
+        )}
       </div>
     </div>
   );

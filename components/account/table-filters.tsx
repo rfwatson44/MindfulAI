@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Search, SlidersHorizontal } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -34,52 +34,49 @@ export function TableFilters({ data, onFiltersChange }: TableFiltersProps) {
   const [activeFilterCount, setActiveFilterCount] = useState(0);
 
   // Extract unique campaign names
-  const allCampaigns = Array.from(
+  const allCampaigns = useMemo(() => Array.from(
     new Set(data.map((ad) => ad.campaignName))
-  ).sort();
+  ).sort(), [data]);
 
   // Get max spend value from data for slider
-  const maxDataSpend = Math.max(...data.map((ad) => ad.spend), 0);
+  const maxDataSpend = useMemo(() => Math.max(...data.map((ad) => ad.spend), 0), [data]);
 
-  useEffect(() => {
-    // Apply filters
+  // Memoize filtered data
+  const filteredData = useMemo(() => {
     let filtered = [...data];
-
-    // Search filter
     if (searchValue) {
       filtered = filtered.filter((ad) =>
         ad.name.toLowerCase().includes(searchValue.toLowerCase())
       );
     }
-
-    // Ad type filter
     if (filters.adType) {
       filtered = filtered.filter((ad) => ad.type === filters.adType);
     }
-
-    // Spend range filter
     filtered = filtered.filter(
       (ad) => ad.spend >= filters.minSpend && ad.spend <= filters.maxSpend
     );
-
-    // Campaign filter
     if (filters.campaigns.length > 0) {
       filtered = filtered.filter((ad) =>
         filters.campaigns.includes(ad.campaignName)
       );
     }
+    return filtered;
+  }, [data, searchValue, filters]);
 
-    // Count active filters
-    let count = 0;
-    if (searchValue) count++;
-    if (filters.adType) count++;
-    if (filters.minSpend > 0 || filters.maxSpend < maxDataSpend) count++;
-    if (filters.campaigns.length > 0) count++;
-    setActiveFilterCount(count);
+// Only update activeFilterCount if it actually changes
+useEffect(() => {
+  let count = 0;
+  if (searchValue) count++;
+  if (filters.adType) count++;
+  if (filters.minSpend > 0 || filters.maxSpend < maxDataSpend) count++;
+  if (filters.campaigns.length > 0) count++;
+  setActiveFilterCount((prev) => (prev !== count ? count : prev));
+}, [searchValue, filters, maxDataSpend]);
 
-    // Send filtered data to parent
-    onFiltersChange(filtered);
-  }, [searchValue, filters, data, onFiltersChange, maxDataSpend]);
+// Only call onFiltersChange if filteredData changes
+useEffect(() => {
+  onFiltersChange(filteredData);
+}, [filteredData, onFiltersChange]);
 
   // Handle search input change
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -119,7 +116,7 @@ export function TableFilters({ data, onFiltersChange }: TableFiltersProps) {
   };
 
   return (
-    <div className="flex w-[300px] items-center gap-2">
+    <div className="flex items-center gap-2">
       <div className="relative flex-1">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
@@ -176,8 +173,8 @@ export function TableFilters({ data, onFiltersChange }: TableFiltersProps) {
             <div className="space-y-2">
               <Label>Campaigns</Label>
               <div className="max-h-48 space-y-2 overflow-y-auto">
-                {allCampaigns.map((campaign) => (
-                  <div key={campaign} className="flex items-center space-x-2">
+                {allCampaigns.map((campaign, idx) => (
+                  <div key={`${campaign}-${idx}`} className="flex items-center space-x-2">
                     <Checkbox
                       id={`campaign-${campaign}`}
                       checked={filters.campaigns.includes(campaign)}

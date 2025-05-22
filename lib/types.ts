@@ -34,13 +34,15 @@ export interface Ad {
   name: string;
   type: AdType;
   previewUrl?: string;
+  thumbnail_url?: string;
   // Default metrics (always displayed)
   spend: number;
   impressions: number;
   clicks: number;
   ctr: number;
-  conversions: number;
+  conversions: number | { mobile_app_install?: number | string };
   costPerResult: number;
+  cost_per_conversion?: number;
   // Optional metrics (can be added/removed from table)
   reach?: number;
   roas?: number;

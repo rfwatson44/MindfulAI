@@ -30,31 +30,34 @@ import SummarizeTab from "./ai-panel/SummarizeTab";
 
 interface AIPanelProps {
   isOpen: boolean;
-  onToggle: () => void;
   selectedRange: SelectedRange | null;
   adsData: Ad[];
 }
 
+import { SheetTitle } from "@/components/ui/sheet";
+
 export function AIPanel({
   isOpen,
-  onToggle,
+  onOpenChange,
   selectedRange,
   adsData,
-}: AIPanelProps) {
+}: AIPanelProps & { onOpenChange: (open: boolean) => void }) {
   const [activeAction, setActiveAction] = useState("summarize");
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
   return (
-    <Sheet open={isOpen} onOpenChange={onToggle}>
+    <Sheet open={isOpen} onOpenChange={onOpenChange}>
       <SheetContent
         className="fixed top-0 right-0 h-screen max-h-screen w-full max-w-2xl border-l p-0 sm:max-w-4xl bg-background z-50"
         side="right"
+
       >
+        {/* <SheetTitle>AI Analysis</SheetTitle> */}
         <div className="overflow-y-auto h-full w-full bg-white">
           <div className="flex items-center justify-between border-b p-4">
             <div className="flex items-center gap-2">
               <Sparkles className="h-5 w-5 text-primary" />
-              <h3 className="text-lg font-semibold">AI Analysis</h3>
+              <span className="text-lg font-semibold">AI Analysis</span>
             </div>
           </div>
 
@@ -63,6 +66,12 @@ export function AIPanel({
               selectedRange={selectedRange}
               isDetailsOpen={isDetailsOpen}
               onToggleDetails={() => setIsDetailsOpen(!isDetailsOpen)}
+              onAnalyze={() => {
+                if (selectedRange) {
+                  // Replace this with actual analysis logic as needed
+                  // console.log('Analyze Selected clicked:', selectedRange);
+                }
+              }}
             />
           </div>
 

@@ -1,34 +1,103 @@
 "use client";
 
-import React, { useState, useMemo, useEffect, useRef } from "react";
+import React, { useMemo, useRef, useState, useEffect, useCallback } from "react";
 import {
   Table,
   TableBody,
   TableCell,
-  TableHead,
-  TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { cn } from "@/lib/utils";
-import { TableFilters } from "@/components/account/table-filters";
-import { MetricsSelector } from "@/components/account/metrics-selector";
+import { cn, parseConversions } from "@/lib/utils";
+import { AdTableHeader } from "@/components/account/ad-table-header";
+import { getSelectionSummary, SelectionMode } from "./selection-logic";
+import { AdTableFilters } from "@/components/account/ad-table-filters";
+import { AdTableDebugCell } from "./ad-table-debug";
+import AdTableRow from "./ad-table-row";
 import { Ad, Metric, SelectedRange } from "@/lib/types";
 import { DEFAULT_METRICS, OPTIONAL_METRICS } from "@/lib/mock-data";
 import { Button } from "@/components/ui/button";
 import { Sparkles } from "lucide-react";
+import AdDetailsModal from "./AdDetailsModal";
+import { AIPanel } from "./ai-panel";
 
 interface AdTableProps {
   data: Ad[];
   onSelectionChange: (selection: SelectedRange | null) => void;
 }
 
-export function AdTable({ data, onSelectionChange }: AdTableProps) {
+function AdImageCell({ thumbnailUrl, alt }: { thumbnailUrl?: string; alt: string }) {
+  const [imgSrc, setImgSrc] = React.useState<string>("/fallback-thumbnail.png");
+  const [isLoaded, setIsLoaded] = React.useState(false);
+  const hasValidThumbnail = thumbnailUrl && typeof thumbnailUrl === "string" && thumbnailUrl.trim() !== "";
+
+  React.useEffect(() => {
+    if (!hasValidThumbnail) return;
+    const realImg = new window.Image();
+    realImg.src = `/api/proxy-image?url=${encodeURIComponent(thumbnailUrl!)}`;
+    realImg.onload = () => {
+      setImgSrc(realImg.src);
+      setIsLoaded(true);
+    };
+    // If error, keep fallback
+  }, [thumbnailUrl, hasValidThumbnail]);
+
+  // If showing placeholder, don't animate
+  const isPlaceholder = imgSrc === "/fallback-thumbnail.png";
+
+  return (
+    <img
+      src={imgSrc}
+      alt={alt}
+      className={`h-full w-full object-cover transition-opacity duration-500 ${!isPlaceholder && isLoaded ? 'opacity-100' : 'opacity-0'}`}
+      style={{ background: '#f3f3f3' }}
+      onLoad={() => { if (!isPlaceholder) setIsLoaded(true); }}
+    />
+  );
+}
+
+interface AdTablePropsWithAnalyze extends AdTableProps {
+  showAnalyzeButton?: boolean;
+  setShowAnalyzeButton?: (show: boolean) => void;
+  aiPanelOpen?: boolean;
+  setAIPanelOpen?: (open: boolean) => void;
+}
+
+function AdTable({ data, onSelectionChange, showDebug = false, showAnalyzeButton: showAnalyzeButtonProp, setShowAnalyzeButton: setShowAnalyzeButtonProp, aiPanelOpen: aiPanelOpenProp, setAIPanelOpen: setAIPanelOpenProp }: AdTablePropsWithAnalyze & { showDebug?: boolean }) {
+  console.log("[AdTable] Rendered. data.length:", data.length);
+  // DEBUG: Component mount/unmount
+  React.useEffect(() => {
+    console.log('[AdTable] MOUNT');
+    return () => {
+      console.log('[AdTable] UNMOUNT');
+    };
+  }, []);
+
+  // DEBUG: Props received
+  console.log('[AdTable] PROPS', { data, onSelectionChange, showDebug });
+
+  // DEBUG: Component loaded
+  const [selectedAd, setSelectedAd] = useState<Ad | null>(null);
   const [activeMetrics, setActiveMetrics] = useState<Metric[]>(DEFAULT_METRICS);
   const [filteredData, setFilteredData] = useState<Ad[]>(data);
+
+  React.useEffect(() => {
+    console.log('[AdTable] data prop changed:', data);
+    setFilteredData(data);
+  }, [data]);
+
+  React.useEffect(() => {
+    console.log('[AdTable] filteredData updated:', filteredData);
+  }, [filteredData]);
+
   const [selectedCells, setSelectedCells] = useState<
     Array<{ row: number; col: number }>
   >([]);
-  const [showAnalyzeButton, setShowAnalyzeButton] = useState(false);
+  const [showAnalyzeButtonLocal, setShowAnalyzeButtonLocal] = useState(false);
+  const [aiPanelOpenLocal, setAIPanelOpenLocal] = useState(false);
+  const showAnalyzeButton = typeof showAnalyzeButtonProp === 'boolean' ? showAnalyzeButtonProp : showAnalyzeButtonLocal;
+  const setShowAnalyzeButton = setShowAnalyzeButtonProp || setShowAnalyzeButtonLocal;
+  const aiPanelOpen = typeof aiPanelOpenProp === 'boolean' ? aiPanelOpenProp : aiPanelOpenLocal;
+  const setAIPanelOpen = setAIPanelOpenProp || setAIPanelOpenLocal;
   const [selectionMode, setSelectionMode] = useState<
     "none" | "cells" | "rows" | "columns"
   >("none");
@@ -37,6 +106,17 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [startX, setStartX] = useState(0);
   const [scrollStartLeft, setScrollStartLeft] = useState(0);
+
+  const handleOpenAdModal = (ad: Ad) => setSelectedAd(ad);
+  const handleCloseAdModal = () => setSelectedAd(null);
+
+  // DEBUG: Log incoming data
+  useEffect(() => {
+    // console.log('[AdTable] MOUNT data prop:', data);
+    if (!data || data.length === 0) {
+      // console.warn('[AdTable] WARNING: data prop is empty or undefined!');
+    }
+  }, [data]);
 
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const scrollbarRef = useRef<HTMLDivElement>(null);
@@ -142,20 +222,6 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
     tableContainerRef.current.scrollLeft = scrollRatio * maxTableScroll;
   };
 
-  useMemo(() => {
-    setFilteredData(data);
-  }, [data]);
-
-  const isNumericMetric = (metricId: string): boolean => {
-    return metricId !== "name";
-  };
-
-  const isCellSelected = (rowIndex: number, colIndex: number): boolean => {
-    return selectedCells.some(
-      (cell) => cell.row === rowIndex && cell.col === colIndex
-    );
-  };
-
   const handleMetricToggle = (metric: Metric) => {
     if (activeMetrics.some((m) => m.id === metric.id)) {
       setActiveMetrics(activeMetrics.filter((m) => m.id !== metric.id));
@@ -196,7 +262,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       setSelectedCells([{ row: rowIndex, col: colIndex }]);
     }
 
-    setShowAnalyzeButton(true);
+
   };
 
   const handleHeaderClick = (colIndex: number, event: React.MouseEvent) => {
@@ -223,7 +289,7 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       setSelectionMode("columns");
       setSelectedCells(columnCells);
     }
-    setShowAnalyzeButton(true);
+
   };
 
   const handleRowHeaderClick = (rowIndex: number, event: React.MouseEvent) => {
@@ -250,27 +316,16 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
       setSelectionMode("rows");
       setSelectedCells(rowCells);
     }
-    setShowAnalyzeButton(true);
   };
 
-  const updateSelectionRange = () => {
-    if (selectedCells.length === 0) {
-      onSelectionChange(null);
-      return;
-    }
+  useEffect(() => {
+    // No-op
+  }, [selectedCells.length, showAnalyzeButtonProp, showAnalyzeButtonLocal, aiPanelOpenProp, aiPanelOpenLocal]);
 
-    const allMetrics = [{ id: "name", name: "Ad Name" }, ...activeMetrics];
-
-    const uniqueRows = Array.from(
-      new Set(selectedCells.map((cell) => cell.row))
-    );
-    const uniqueCols = Array.from(
-      new Set(selectedCells.map((cell) => cell.col))
-    );
-
+  useEffect(() => {
     if (selectionMode === "columns") {
       const metrics = uniqueCols.map((colIndex) => allMetrics[colIndex]);
-      const values = metrics.flatMap((metric) =>
+      const values = metrics.flatMap((metric: Metric) =>
         filteredData.map((ad) => ({
           adId: ad.id,
           adName: ad.name,
@@ -279,17 +334,18 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
           value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
         }))
       );
-
-      onSelectionChange({
-        type: "column",
-        metricId: metrics[0].id,
-        metricName: metrics.map((m) => m.name).join(", "),
+      const selection = {
+        type: "column" as const,
+        metricId: metrics[0]?.id,
+        metricName: metrics.map((m: Metric) => m.name).join(", "),
         values,
-      });
+      };
+      // console.log('[AdTable] Calling onSelectionChange with (columns):', selection);
+      onSelectionChange(selection);
     } else if (selectionMode === "rows") {
       const ads = uniqueRows.map((rowIndex) => filteredData[rowIndex]);
       const values = ads.flatMap((ad) =>
-        allMetrics.map((metric) => ({
+        allMetrics.map((metric: Metric) => ({
           adId: ad.id,
           adName: ad.name,
           metricId: metric.id,
@@ -297,13 +353,14 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
           value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
         }))
       );
-
-      onSelectionChange({
-        type: "row",
-        adId: ads[0].id,
+      const selection = {
+        type: "row" as const,
+        adId: ads[0]?.id,
         adName: ads.map((ad) => ad.name).join(", "),
         values,
-      });
+      };
+      // console.log('[AdTable] Calling onSelectionChange with (rows):', selection);
+      onSelectionChange(selection);
     } else {
       const selections = selectedCells.map((cell) => {
         const ad = filteredData[cell.row];
@@ -316,179 +373,111 @@ export function AdTable({ data, onSelectionChange }: AdTableProps) {
           value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
         };
       });
-
-      onSelectionChange({
-        type: "cell",
+      const selection = {
+        type: "cell" as const,
         ...selections[0],
-        additionalSelections:
-          selections.length > 1 ? selections.slice(1) : undefined,
-      });
+        additionalSelections: selections.length > 1 ? selections.slice(1) : undefined,
+      };
+      // console.log('[AdTable] Calling onSelectionChange with (cells):', selection);
+      onSelectionChange(selection);
     }
-  };
+  }, [selectedCells, selectionMode, activeMetrics, filteredData, onSelectionChange]);
 
-  const handleAnalyzeClick = () => {
-    updateSelectionRange();
-    setShowAnalyzeButton(false);
-  };
+  // --- Cell selection checker (must be top-level) ---
+  const isCellSelected = useCallback(
+    (rowIndex: number, colIndex: number): boolean => {
+      return selectedCells.some(
+        (cell) => cell.row === rowIndex && cell.col === colIndex
+      );
+    },
+    [selectedCells]
+  );
+
+  const formatValue = useCallback((value: number, metricId: string) => {
+    // // console.log('[AdTable] formatValue:', value, metricId);
+    switch (metricId) {
+      case "spend":
+      case "amount_spent":
+        return `$${Number(value).toFixed(2)}`;
+      case "impressions":
+      case "clicks":
+        return `${Number(value).toLocaleString()}`;
+      case "ctr":
+        return `${(Number(value) * 100).toFixed(2)}%`;
+      default:
+        return String(value);
+    }
+  }, []);
+
+  // DEBUG: About to render
+  // // console.log('[AdTable] About to render', { filteredData, data, showDebug });
+  if (filteredData.length === 0) {
+    // // console.log('[AdTable] No ads to display in table body!');
+  }
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden">
-      <div className="border-b p-4">
-        <div className="flex items-start gap-4">
-          <div className="w-[300px]">
-            <TableFilters data={data} onFiltersChange={handleFiltersChange} />
-          </div>
-          <div className="flex-1">
-            <MetricsSelector
-              activeMetrics={activeMetrics}
-              availableMetrics={OPTIONAL_METRICS}
-              onToggle={handleMetricToggle}
-            />
-          </div>
-        </div>
-      </div>
+    <div className="flex flex-col h-full min-h-0 flex-1">
+      {/* Analyze Selected button above metrics/filter bar, aligned right */}
 
-      <div className="relative flex-1 overflow-hidden">
-        <div
-          ref={tableContainerRef}
-          className="h-full overflow-auto"
-          onScroll={handleScroll}
-          style={{ width: `${tableWidth}px` }}
-        >
-          <Table>
-            <TableHeader>
-              <TableRow className="border-b bg-muted/50">
-                <TableHead className="sticky left-0 top-0 z-20 w-12 bg-muted/50 p-0">
-                  <div className="flex h-full w-full items-center justify-center border-r border-border">
-                    #
-                  </div>
-                </TableHead>
-
-                <TableHead
-                  className="sticky left-12 top-0 z-20 w-64 cursor-pointer bg-muted/50 p-3 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted/80"
-                  onClick={(e) => handleHeaderClick(0, e)}
-                >
-                  <span>Ad</span>
-                </TableHead>
-
-                {activeMetrics.map((metric, index) => (
-                  <TableHead
-                    key={metric.id}
-                    className={cn(
-                      "sticky top-0 cursor-pointer whitespace-nowrap p-3 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted/80",
-                      isNumericMetric(metric.id) ? "text-center" : ""
-                    )}
-                    style={{ width: "150px" }}
-                    onClick={(e) => handleHeaderClick(index + 1, e)}
-                  >
-                    <span>{metric.name}</span>
-                  </TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredData.map((ad, rowIndex) => (
-                <TableRow key={ad.id} className="group hover:bg-muted/50">
-                  <TableCell
-                    className="sticky left-0 z-10 cursor-pointer bg-muted/50 p-0 text-center font-medium text-muted-foreground group-hover:bg-muted/50"
-                    onClick={(e) => handleRowHeaderClick(rowIndex, e)}
-                  >
-                    <div className="flex h-full w-full items-center justify-center border-r border-border">
-                      {rowIndex + 1}
-                    </div>
-                  </TableCell>
-
-                  <TableCell
-                    className={cn(
-                      "sticky left-12 z-10 h-16 bg-background p-2 group-hover:bg-muted/50",
-                      isCellSelected(rowIndex, 0) ? "bg-primary/10" : ""
-                    )}
-                    onClick={(e) => handleCellClick(rowIndex, 0, e)}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded border border-border bg-muted">
-                        {ad.previewUrl ? (
-                          <img
-                            src={ad.previewUrl}
-                            alt={ad.name}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
-                            No preview
-                          </div>
-                        )}
-                      </div>
-                      <div className="truncate font-medium">{ad.name}</div>
-                    </div>
-                  </TableCell>
-
-                  {activeMetrics.map((metric, colIndex) => (
-                    <TableCell
-                      key={metric.id}
-                      className={cn(
-                        "cursor-pointer p-2",
-                        isNumericMetric(metric.id)
-                          ? "text-center"
-                          : "text-right",
-                        isCellSelected(rowIndex, colIndex + 1)
-                          ? "bg-primary/10"
-                          : ""
-                      )}
-                      onClick={(e) =>
-                        handleCellClick(rowIndex, colIndex + 1, e)
-                      }
-                    >
-                      {formatValue(ad[metric.id as keyof Ad], metric.id)}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-
-        <div
-          ref={scrollbarRef}
-          className="absolute bottom-0 left-0 h-2 w-full bg-muted/50 cursor-pointer"
-          onClick={handleTrackClick}
-        >
-          <div
-            ref={thumbRef}
-            className="absolute h-full w-32 bg-muted-foreground/50 rounded hover:bg-muted-foreground/70 active:bg-muted-foreground/90 transition-colors"
-            style={{
-              transform: `translateX(${scrollLeft}px)`,
-              cursor: "grab",
-            }}
-            onMouseDown={handleThumbMouseDown}
-          />
-        </div>
-      </div>
-
-      {showAnalyzeButton && (
-        <div className="fixed bottom-6 right-6 z-50">
-          <Button onClick={handleAnalyzeClick} size="lg" className="shadow-lg">
-            <Sparkles className="mr-2 h-4 w-4" />
-            Analyze Selection
-          </Button>
-        </div>
+      {filteredData.length > 0 && aiPanelOpen && (
+        <AIPanel
+          isOpen={aiPanelOpen}
+          onOpenChange={setAIPanelOpen}
+          selectedRange={getSelectionSummary(selectionMode as SelectionMode, selectedCells, activeMetrics, filteredData)}
+          adsData={filteredData}
+        />
       )}
+      <div className="border-b p-4 sticky top-0 z-30 bg-white">
+        <AdTableFilters
+          data={data}
+          activeMetrics={activeMetrics}
+          onFiltersChange={handleFiltersChange}
+          onMetricToggle={handleMetricToggle}
+        />
+      </div>
+      <div className="flex-1 min-h-0 overflow-auto w-full">
+        <Table>
+          <AdTableHeader
+            activeMetrics={activeMetrics}
+            filteredData={filteredData}
+            data={data}
+            onHeaderClick={handleHeaderClick}
+          />
+          <TableBody>
+            {filteredData.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={activeMetrics.length + 2} className="text-center text-red-600">
+                  No ads to display. See console for debug info.
+                </TableCell>
+              </TableRow>
+            )}
+            {filteredData.map((ad, rowIndex) => {
+              // // console.log('[AdTable] Rendering ad row:', ad, rowIndex);
+              return (
+                <React.Fragment key={ad.id || rowIndex}>
+                  <AdTableRow
+                    ad={ad}
+                    rowIndex={rowIndex}
+                    activeMetrics={activeMetrics}
+                    isCellSelected={isCellSelected}
+                    handleRowHeaderClick={handleRowHeaderClick}
+                    handleCellClick={handleCellClick}
+                    formatValue={formatValue}
+                  />
+                  {showDebug && (
+                    <TableRow className="bg-yellow-50">
+                      <TableCell colSpan={activeMetrics.length + 2} className="p-0">
+                        <AdTableDebugCell ad={ad} />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   );
 }
-
-function formatValue(value: any, metricId: string): string {
-  if (value === undefined || value === null) return "--";
-
-  if (
-    metricId === "spend" ||
-    metricId === "cpa" ||
-    metricId === "costPerResult"
-  ) {
-    return `$${Number(value).toFixed(2)}`;
-  } else if (metricId === "ctr" || metricId === "roas") {
-    return `${Number(value).toFixed(2)}%`;
-  } else {
-    return value.toLocaleString();
-  }
-}
+export default AdTable;
