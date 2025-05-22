@@ -12,6 +12,11 @@
 /.next/
 /out/
 
+<<<<<<< HEAD
+=======
+.cursorrules
+
+>>>>>>> main
 # production
 /build
 

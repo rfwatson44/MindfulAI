@@ -34,13 +34,23 @@ export interface Ad {
   name: string;
   type: AdType;
   previewUrl?: string;
+<<<<<<< HEAD
+=======
+  thumbnail_url?: string;
+>>>>>>> main
   // Default metrics (always displayed)
   spend: number;
   impressions: number;
   clicks: number;
   ctr: number;
+<<<<<<< HEAD
   conversions: number;
   costPerResult: number;
+=======
+  conversions: number | { mobile_app_install?: number | string };
+  costPerResult: number;
+  cost_per_conversion?: number;
+>>>>>>> main
   // Optional metrics (can be added/removed from table)
   reach?: number;
   roas?: number;
@@ -75,6 +85,16 @@ export type SelectedRange =
       metricId: string;
       metricName: string;
       value: any;
+<<<<<<< HEAD
+=======
+      additionalSelections?: {
+        adId: string;
+        adName: string;
+        metricId: string;
+        metricName: string;
+        value: any;
+      }[];
+>>>>>>> main
     }
   | {
       type: "row";
@@ -99,4 +119,8 @@ export type SelectedRange =
         metricName: string;
         value: any;
       }[];
+<<<<<<< HEAD
     };
+=======
+    };
+>>>>>>> main

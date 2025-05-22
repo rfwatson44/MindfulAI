@@ -59,8 +59,14 @@ function MetricSummaryCard({ label, value }: { label: string; value: string }) {
 }
 
 function ColumnSummary({ metric, values, metricId }: { metric: string; values: any[]; metricId: string }) {
+<<<<<<< HEAD
   const stats = getColumnStats(values);
   if (!stats) return null;
+=======
+  // Render the column if there are any values at all (including all zeroes)
+  if (!values || values.length === 0) return null;
+  const stats = getColumnStats(values) || { average: 0, highest: 0, lowest: 0 };
+>>>>>>> main
 
   return (
     <div className="space-y-2 mb-4 last:mb-0">
@@ -86,6 +92,10 @@ function ColumnSummary({ metric, values, metricId }: { metric: string; values: a
 function RowSummary({ adName, values }: { adName: string; values: any[] }) {
   const spend = values.find(v => v.metricId === "spend")?.value || 0;
   const conversions = values.find(v => v.metricId === "conversions")?.value || 0;
+<<<<<<< HEAD
+=======
+  const ctr = values.find(v => v.metricId === "ctr")?.value;
+>>>>>>> main
   const costPerConversion = spend / (conversions || 1);
 
   return (
@@ -101,6 +111,13 @@ function RowSummary({ adName, values }: { adName: string; values: any[] }) {
           value={formatValue(conversions, "conversions")} 
         />
         <MetricSummaryCard 
+<<<<<<< HEAD
+=======
+          label="CTR" 
+          value={ctr !== undefined ? formatValue(ctr, "ctr") : "--"} 
+        />
+        <MetricSummaryCard 
+>>>>>>> main
           label="Cost/Conv." 
           value={formatValue(costPerConversion, "costPerResult")} 
         />
@@ -128,6 +145,7 @@ export default function SummarizeTab({ selectedRange, adsData }: { selectedRange
       {showColumnSummary && (
         <div>
           <h2 className="text-sm font-semibold mb-3 text-gray-900">Column Analysis</h2>
+<<<<<<< HEAD
           {selectedRange.metricName.split(", ").map((metric, index) => (
             <ColumnSummary
               key={index}
@@ -136,6 +154,33 @@ export default function SummarizeTab({ selectedRange, adsData }: { selectedRange
               metricId={selectedRange.metricId}
             />
           ))}
+=======
+           {/* Ensure correct mapping: use both metric name and metric id for filtering/summary */}
+           {(() => {
+             // Get list of metrics and their ids from values
+             const metrics = Array.from(
+               new Set(selectedRange.values.map(v => `${v.metricId}|||${v.metricName}`))
+             ).map(str => {
+               const [id, name] = str.split('|||');
+               return { id, name };
+             });
+             // Always show metrics in the order defined by DEFAULT_METRICS and OPTIONAL_METRICS
+             const METRIC_ORDER = [
+               "spend", "impressions", "clicks", "ctr", "conversions", "cost_per_conversion",
+               "reach", "roas", "purchases", "costPerPurchase", "addToCart", "appInstalls", "costPerAppInstall", "leads", "costPerLead"
+             ];
+             metrics.sort((a, b) => METRIC_ORDER.indexOf(a.id) - METRIC_ORDER.indexOf(b.id));
+             return metrics.map((metric, index) => (
+               <ColumnSummary
+                 key={metric.id}
+                 metric={metric.name}
+                 values={selectedRange.values.filter(v => v.metricId === metric.id)}
+                 metricId={metric.id}
+               />
+             ));
+           })()}
+
+>>>>>>> main
         </div>
       )}
 

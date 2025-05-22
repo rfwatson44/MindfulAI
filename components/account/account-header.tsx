@@ -8,10 +8,22 @@ interface AccountHeaderProps {
 }
 
 export function AccountHeader({ account }: AccountHeaderProps) {
+<<<<<<< HEAD
   return (
     <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">{account.name}</h1>
+=======
+  // Track renders for debugging
+  console.log('[AccountHeader] Render', account);
+
+  return (
+    <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">
+          {account.name} Ad Account
+        </h1>
+>>>>>>> main
         <p className="text-muted-foreground">ID: {account.id}</p>
       </div>
       <div className="flex flex-col gap-2 sm:flex-row">
