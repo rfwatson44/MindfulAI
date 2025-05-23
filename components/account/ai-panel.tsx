@@ -7,21 +7,12 @@ import {
   BarChart2,
   Table as TableIcon,
   MessageSquare,
-  ChevronDown,
-  ChevronUp,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Ad, SelectedRange } from "@/lib/types";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 
 // Import components directly
 import ChartTab from "./chart-tab";
@@ -33,8 +24,6 @@ interface AIPanelProps {
   selectedRange: SelectedRange | null;
   adsData: Ad[];
 }
-
-import { SheetTitle } from "@/components/ui/sheet";
 
 export function AIPanel({
   isOpen,
@@ -50,7 +39,6 @@ export function AIPanel({
       <SheetContent
         className="fixed top-0 right-0 h-screen max-h-screen w-full max-w-2xl border-l p-0 sm:max-w-4xl bg-background z-50"
         side="right"
-
       >
         {/* <SheetTitle>AI Analysis</SheetTitle> */}
         <div className="overflow-y-auto h-full w-full bg-white">

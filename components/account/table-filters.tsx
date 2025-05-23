@@ -17,6 +17,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Ad, AdType, FilterState } from "@/lib/types";
 import { Slider } from "@/components/ui/slider";
+import React from "react";
 
 interface TableFiltersProps {
   data: Ad[];
@@ -34,12 +35,16 @@ export function TableFilters({ data, onFiltersChange }: TableFiltersProps) {
   const [activeFilterCount, setActiveFilterCount] = useState(0);
 
   // Extract unique campaign names
-  const allCampaigns = useMemo(() => Array.from(
-    new Set(data.map((ad) => ad.campaignName))
-  ).sort(), [data]);
+  const allCampaigns = useMemo(
+    () => Array.from(new Set(data.map((ad) => ad.campaignName))).sort(),
+    [data]
+  );
 
   // Get max spend value from data for slider
-  const maxDataSpend = useMemo(() => Math.max(...data.map((ad) => ad.spend), 0), [data]);
+  const maxDataSpend = useMemo(
+    () => Math.max(...data.map((ad) => ad.spend), 0),
+    [data]
+  );
 
   // Memoize filtered data
   const filteredData = useMemo(() => {
@@ -63,20 +68,34 @@ export function TableFilters({ data, onFiltersChange }: TableFiltersProps) {
     return filtered;
   }, [data, searchValue, filters]);
 
-// Only update activeFilterCount if it actually changes
-useEffect(() => {
-  let count = 0;
-  if (searchValue) count++;
-  if (filters.adType) count++;
-  if (filters.minSpend > 0 || filters.maxSpend < maxDataSpend) count++;
-  if (filters.campaigns.length > 0) count++;
-  setActiveFilterCount((prev) => (prev !== count ? count : prev));
-}, [searchValue, filters, maxDataSpend]);
+  // Only update activeFilterCount if it actually changes
+  useEffect(() => {
+    let count = 0;
+    if (searchValue) count++;
+    if (filters.adType) count++;
+    if (filters.minSpend > 0 || filters.maxSpend < maxDataSpend) count++;
+    if (filters.campaigns.length > 0) count++;
+    setActiveFilterCount((prev) => (prev !== count ? count : prev));
+  }, [searchValue, filters, maxDataSpend]);
 
-// Only call onFiltersChange if filteredData changes
-useEffect(() => {
-  onFiltersChange(filteredData);
-}, [filteredData, onFiltersChange]);
+  // Only call onFiltersChange if filteredData actually changes
+  const previousFilteredDataRef = React.useRef<Ad[]>([]);
+  useEffect(() => {
+    // Skip initial render or if data is empty
+    if (!data || data.length === 0) {
+      return;
+    }
+
+    // Only update if the filtered data actually changed
+    if (
+      previousFilteredDataRef.current.length !== filteredData.length ||
+      JSON.stringify(filteredData.map((ad) => ad.id)) !==
+        JSON.stringify(previousFilteredDataRef.current.map((ad) => ad.id))
+    ) {
+      previousFilteredDataRef.current = filteredData;
+      onFiltersChange(filteredData);
+    }
+  }, [filteredData, onFiltersChange, data]);
 
   // Handle search input change
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -168,7 +187,10 @@ useEffect(() => {
               <Label>Campaigns</Label>
               <div className="max-h-48 space-y-2 overflow-y-auto">
                 {allCampaigns.map((campaign, idx) => (
-                  <div key={`${campaign}-${idx}`} className="flex items-center space-x-2">
+                  <div
+                    key={`${campaign}-${idx}`}
+                    className="flex items-center space-x-2"
+                  >
                     <Checkbox
                       id={`campaign-${campaign}`}
                       checked={filters.campaigns.includes(campaign)}
