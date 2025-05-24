@@ -16,7 +16,7 @@ export default async function AccountPage({
 }: {
   params: { accountId: string };
 }) {
-  // Fetch the account by account_id
+  // Fetch the account by account_id from Supabase
   const { data: account } = await supabase
     .from("accounts")
     .select("*")
@@ -40,23 +40,8 @@ export default async function AccountPage({
     console.error("Supabase meta_ads fetch error:", adsError);
   }
 
-  // Always render the page and table, even if account is not found
-  // Map Supabase account to AdAccount shape expected by UI
-  const mappedAccount = account
-    ? {
-        id: account.account_id || account.id,
-        name: account.account_name || account.name || "",
-        status: account.status || "active",
-        metrics: {
-          spend: account.spend || 0,
-          conversions: account.conversions || 0,
-          adCount: account.ad_count || 0,
-          cpa: account.cpa || 0,
-        },
-      }
-    : { id: params.accountId, name: "", status: "active", metrics: { spend: 0, conversions: 0, adCount: 0, cpa: 0 } };
-
-  if (!account) {
+  // If neither account nor adsData exist, show not found
+  if ((!account && (!adsData || adsData.length === 0))) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="text-center">
@@ -69,7 +54,33 @@ export default async function AccountPage({
     );
   }
 
+  // If ads exist for this account_id, but account row is missing, construct a minimal account object
+  const safeAdsData = adsData ?? [];
+  const mappedAccount = account
+    ? {
+        id: account.account_id || account.id,
+        name: account.account_name || account.name || "",
+        status: account.status || "active",
+        metrics: {
+          spend: account.spend || 0,
+          conversions: account.conversions || 0,
+          adCount: account.ad_count || 0,
+          cpa: account.cpa || 0,
+        },
+      }
+    : {
+        id: params.accountId,
+        name: params.accountId,
+        status: "active",
+        metrics: {
+          spend: 0,
+          conversions: 0,
+          adCount: safeAdsData.length,
+          cpa: 0,
+        },
+      };
+
   return (
-    <AccountPageClient account={mappedAccount} initialAdsData={adsData || []} />
+    <AccountPageClient account={mappedAccount} initialAdsData={safeAdsData} />
   );
 }

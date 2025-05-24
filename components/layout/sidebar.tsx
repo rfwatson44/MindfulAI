@@ -99,18 +99,6 @@ export const Sidebar = forwardRef<HTMLDivElement, SidebarProps>(
 
   <div className="mt-6 px-4">
     <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-      Featured Accounts
-    </h4>
-    <Button asChild variant={pathname === "/account/1114312039331153" ? "secondary" : "ghost"} className="w-full justify-start">
-      <Link href="/account/1114312039331153">Mindful</Link>
-    </Button>
-    <Button asChild variant={pathname === "/account/604977370158225" ? "secondary" : "ghost"} className="w-full justify-start">
-      <Link href="/account/604977370158225">Zleaguegg</Link>
-    </Button>
-  </div>
-
-  <div className="mt-6 px-4">
-    <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
       Ad Accounts
     </h4>
     {accounts.map((account) => (
