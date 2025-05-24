@@ -8,8 +8,8 @@ interface AccountHeaderProps {
 }
 
 export function AccountHeader({ account }: AccountHeaderProps) {
-  // Track renders for debugging
-  console.log('[AccountHeader] Render', account);
+  // Remove debug logging
+  // console.log('[AccountHeader] Render', account);
 
   return (
     <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">

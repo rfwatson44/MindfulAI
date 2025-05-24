@@ -69,7 +69,9 @@ export const Sidebar = forwardRef<HTMLDivElement, SidebarProps>(
           ref={ref}
           className={cn(
             "fixed z-50 inset-y-0 left-0 w-72 flex flex-col border-r border-border bg-background transition-transform duration-300",
-            isSidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
+            isSidebarOpen
+              ? "translate-x-0"
+              : "-translate-x-full lg:translate-x-0",
             className
           )}
           aria-label="Sidebar"
@@ -91,37 +93,57 @@ export const Sidebar = forwardRef<HTMLDivElement, SidebarProps>(
 
             <ScrollArea className="flex-1 py-4">
               <nav className="grid gap-1 px-2">
-  <Button asChild variant={pathname === "/dashboard" ? "secondary" : "ghost"} className="w-full justify-start">
-    <Link href="/dashboard">
-      <Home className="mr-2 h-4 w-4" /> Dashboard
-    </Link>
-  </Button>
+                <Button
+                  asChild
+                  variant={pathname === "/dashboard" ? "secondary" : "ghost"}
+                  className="w-full justify-start"
+                >
+                  <Link href="/dashboard">
+                    <Home className="mr-2 h-4 w-4" /> Dashboard
+                  </Link>
+                </Button>
 
-  <div className="mt-6 px-4">
-    <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-      Ad Accounts
-    </h4>
-    {accounts.map((account) => (
-      <React.Fragment key={account.account_id}>
-        <Button asChild variant={pathname === `/account/${account.account_id}` ? "secondary" : "ghost"} className="w-full justify-start">
-          <Link href={`/account/${account.account_id}`}>
-            {account.account_name}
-          </Link>
-        </Button>
-      </React.Fragment>
-    ))}
-  </div>
+                <div className="mt-6 px-4">
+                  <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+                    Ad Accounts
+                  </h4>
+                  {accounts.map((account) => (
+                    <React.Fragment key={account.account_id}>
+                      <Button
+                        asChild
+                        variant={
+                          pathname === `/account/${account.account_id}`
+                            ? "secondary"
+                            : "ghost"
+                        }
+                        className="w-full justify-start"
+                      >
+                        <Link href={`/account/${account.account_id}`}>
+                          {account.account_name}
+                        </Link>
+                      </Button>
+                    </React.Fragment>
+                  ))}
+                </div>
 
                 <div className="mt-6 px-4">
                   <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
                     Settings
                   </h4>
-                  <Button asChild variant={pathname === "/admin" ? "secondary" : "ghost"} className="w-full justify-start">
+                  <Button
+                    asChild
+                    variant={pathname === "/admin" ? "secondary" : "ghost"}
+                    className="w-full justify-start"
+                  >
                     <Link href="/admin">
                       <ShieldCheck className="mr-2 h-4 w-4" /> Admin
                     </Link>
                   </Button>
-                  <Button asChild variant={pathname === "/settings" ? "secondary" : "ghost"} className="w-full justify-start">
+                  <Button
+                    asChild
+                    variant={pathname === "/settings" ? "secondary" : "ghost"}
+                    className="w-full justify-start"
+                  >
                     <Link href="/settings">
                       <Settings className="mr-2 h-4 w-4" /> Settings
                     </Link>

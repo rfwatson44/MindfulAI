@@ -1,12 +1,13 @@
 "use client";
 
-import React, { useMemo, useRef, useState, useEffect, useCallback } from "react";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableRow,
-} from "@/components/ui/table";
+import React, {
+  useMemo,
+  useRef,
+  useState,
+  useEffect,
+  useCallback,
+} from "react";
+import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { AdTableHeader } from "@/components/account/ad-table-header";
 import { getSelectionSummary, SelectionMode } from "./selection-logic";
 import { AdTableFilters } from "@/components/account/ad-table-filters";
@@ -24,10 +25,19 @@ interface AdTableProps {
   onSelectionChange: (selection: SelectedRange | null) => void;
 }
 
-export function AdImageCell({ thumbnailUrl, alt }: { thumbnailUrl?: string; alt: string }) {
+export function AdImageCell({
+  thumbnailUrl,
+  alt,
+}: {
+  thumbnailUrl?: string;
+  alt: string;
+}) {
   const [imgSrc, setImgSrc] = React.useState<string>("/fallback-thumbnail.png");
   const [isLoaded, setIsLoaded] = React.useState(false);
-  const hasValidThumbnail = thumbnailUrl && typeof thumbnailUrl === "string" && thumbnailUrl.trim() !== "";
+  const hasValidThumbnail =
+    thumbnailUrl &&
+    typeof thumbnailUrl === "string" &&
+    thumbnailUrl.trim() !== "";
 
   React.useEffect(() => {
     if (!hasValidThumbnail) return;
@@ -47,9 +57,13 @@ export function AdImageCell({ thumbnailUrl, alt }: { thumbnailUrl?: string; alt:
     <img
       src={imgSrc}
       alt={alt}
-      className={`h-full w-full object-cover transition-opacity duration-500 ${!isPlaceholder && isLoaded ? 'opacity-100' : 'opacity-0'}`}
-      style={{ background: '#f3f3f3' }}
-      onLoad={() => { if (!isPlaceholder) setIsLoaded(true); }}
+      className={`h-full w-full object-cover transition-opacity duration-500 ${
+        !isPlaceholder && isLoaded ? "opacity-100" : "opacity-0"
+      }`}
+      style={{ background: "#f3f3f3" }}
+      onLoad={() => {
+        if (!isPlaceholder) setIsLoaded(true);
+      }}
     />
   );
 }
@@ -61,41 +75,56 @@ interface AdTablePropsWithAnalyze extends AdTableProps {
   setAIPanelOpen?: (open: boolean) => void;
 }
 
-export function AdTable({ data, onSelectionChange, showDebug = false, showAnalyzeButton: showAnalyzeButtonProp, setShowAnalyzeButton: setShowAnalyzeButtonProp, aiPanelOpen: aiPanelOpenProp, setAIPanelOpen: setAIPanelOpenProp }: AdTablePropsWithAnalyze & { showDebug?: boolean }) {
-  console.log("[AdTable] Rendered. data.length:", data.length);
-  // DEBUG: Component mount/unmount
+export function AdTable({
+  data,
+  onSelectionChange,
+  showDebug = false,
+  showAnalyzeButton: showAnalyzeButtonProp,
+  setShowAnalyzeButton: setShowAnalyzeButtonProp,
+  aiPanelOpen: aiPanelOpenProp,
+  setAIPanelOpen: setAIPanelOpenProp,
+}: AdTablePropsWithAnalyze & { showDebug?: boolean }) {
+  // Comment out debug logs that may cause performance issues
+  // console.log("[AdTable] Rendered. data.length:", data.length);
+
+  // Use memoized refs to prevent recreation on every render
+  const safeData = useMemo(() => data || [], [data]);
+
+  // DEBUG: Component mount/unmount - leave one log to debug mount cycle
   React.useEffect(() => {
-    console.log('[AdTable] MOUNT');
+    // console.log('[AdTable] MOUNT');
     return () => {
-      console.log('[AdTable] UNMOUNT');
+      // console.log('[AdTable] UNMOUNT');
     };
   }, []);
 
-  // DEBUG: Props received
-  console.log('[AdTable] PROPS', { data, onSelectionChange, showDebug });
+  // Comment out debug logs
+  // console.log('[AdTable] PROPS', { data, onSelectionChange, showDebug });
 
-  // DEBUG: Component loaded
   const [selectedAd, setSelectedAd] = useState<Ad | null>(null);
   const [activeMetrics, setActiveMetrics] = useState<Metric[]>(DEFAULT_METRICS);
-  const [filteredData, setFilteredData] = useState<Ad[]>(data);
+
+  // Use memo to prevent recreation of filteredData
+  const [filteredDataState, setFilteredDataState] = useState<Ad[]>(safeData);
+  const filteredData = useMemo(() => filteredDataState, [filteredDataState]);
 
   React.useEffect(() => {
-    console.log('[AdTable] data prop changed:', data);
-    setFilteredData(data);
-  }, [data]);
-
-  React.useEffect(() => {
-    console.log('[AdTable] filteredData updated:', filteredData);
-  }, [filteredData]);
+    setFilteredDataState(safeData);
+  }, [safeData]);
 
   const [selectedCells, setSelectedCells] = useState<
     Array<{ row: number; col: number }>
   >([]);
   const [showAnalyzeButtonLocal, setShowAnalyzeButtonLocal] = useState(false);
   const [aiPanelOpenLocal, setAIPanelOpenLocal] = useState(false);
-  const showAnalyzeButton = typeof showAnalyzeButtonProp === 'boolean' ? showAnalyzeButtonProp : showAnalyzeButtonLocal;
-  const setShowAnalyzeButton = setShowAnalyzeButtonProp || setShowAnalyzeButtonLocal;
-  const aiPanelOpen = typeof aiPanelOpenProp === 'boolean' ? aiPanelOpenProp : aiPanelOpenLocal;
+  const showAnalyzeButton =
+    typeof showAnalyzeButtonProp === "boolean"
+      ? showAnalyzeButtonProp
+      : showAnalyzeButtonLocal;
+  const setShowAnalyzeButton =
+    setShowAnalyzeButtonProp || setShowAnalyzeButtonLocal;
+  const aiPanelOpen =
+    typeof aiPanelOpenProp === "boolean" ? aiPanelOpenProp : aiPanelOpenLocal;
   const setAIPanelOpen = setAIPanelOpenProp || setAIPanelOpenLocal;
   const [selectionMode, setSelectionMode] = useState<
     "none" | "cells" | "rows" | "columns"
@@ -229,7 +258,15 @@ export function AdTable({ data, onSelectionChange, showDebug = false, showAnalyz
   };
 
   const handleFiltersChange = (filtered: Ad[]) => {
-    setFilteredData(filtered);
+    setSelectedCells([]);
+    setSelectionMode("none");
+    if (setShowAnalyzeButton) {
+      setShowAnalyzeButton(false);
+    }
+    if (onSelectionChange) {
+      onSelectionChange(null);
+    }
+    setFilteredDataState(filtered);
   };
 
   const handleCellClick = (
@@ -259,8 +296,6 @@ export function AdTable({ data, onSelectionChange, showDebug = false, showAnalyz
       setSelectionMode("cells");
       setSelectedCells([{ row: rowIndex, col: colIndex }]);
     }
-
-
   };
 
   const handleHeaderClick = (colIndex: number, event: React.MouseEvent) => {
@@ -287,7 +322,6 @@ export function AdTable({ data, onSelectionChange, showDebug = false, showAnalyz
       setSelectionMode("columns");
       setSelectedCells(columnCells);
     }
-
   };
 
   const handleRowHeaderClick = (rowIndex: number, event: React.MouseEvent) => {
@@ -318,68 +352,162 @@ export function AdTable({ data, onSelectionChange, showDebug = false, showAnalyz
 
   useEffect(() => {
     // No-op
-  }, [selectedCells.length, showAnalyzeButtonProp, showAnalyzeButtonLocal, aiPanelOpenProp, aiPanelOpenLocal]);
+  }, [
+    selectedCells.length,
+    showAnalyzeButtonProp,
+    showAnalyzeButtonLocal,
+    aiPanelOpenProp,
+    aiPanelOpenLocal,
+  ]);
+
+  // Extract unique rows and columns from selected cells
+  const uniqueCols = useMemo(() => {
+    const colSet = new Set<number>();
+    selectedCells.forEach((cell) => colSet.add(cell.col));
+    return Array.from(colSet);
+  }, [selectedCells]);
+
+  const uniqueRows = useMemo(() => {
+    const rowSet = new Set<number>();
+    selectedCells.forEach((cell) => rowSet.add(cell.row));
+    return Array.from(rowSet);
+  }, [selectedCells]);
+
+  // Combine all available metrics
+  const allMetrics = useMemo(
+    () => [{ id: "name", name: "Ad Name" }, ...activeMetrics],
+    [activeMetrics]
+  );
 
   useEffect(() => {
-    if (selectionMode === "columns") {
-      const metrics = uniqueCols.map((colIndex) => allMetrics[colIndex]);
-      const values = metrics.flatMap((metric: Metric) =>
-        filteredData.map((ad) => ({
-          adId: ad.id,
-          adName: ad.name,
-          metricId: metric.id,
-          metricName: metric.name,
-          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
-        }))
-      );
-      const selection = {
-        type: "column" as const,
-        metricId: metrics[0]?.id,
-        metricName: metrics.map((m: Metric) => m.name).join(", "),
-        values,
-      };
-      // console.log('[AdTable] Calling onSelectionChange with (columns):', selection);
-      onSelectionChange(selection);
-    } else if (selectionMode === "rows") {
-      const ads = uniqueRows.map((rowIndex) => filteredData[rowIndex]);
-      const values = ads.flatMap((ad) =>
-        allMetrics.map((metric: Metric) => ({
-          adId: ad.id,
-          adName: ad.name,
-          metricId: metric.id,
-          metricName: metric.name,
-          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
-        }))
-      );
-      const selection = {
-        type: "row" as const,
-        adId: ads[0]?.id,
-        adName: ads.map((ad) => ad.name).join(", "),
-        values,
-      };
-      // console.log('[AdTable] Calling onSelectionChange with (rows):', selection);
-      onSelectionChange(selection);
-    } else {
-      const selections = selectedCells.map((cell) => {
-        const ad = filteredData[cell.row];
-        const metric = allMetrics[cell.col];
-        return {
-          adId: ad.id,
-          adName: ad.name,
-          metricId: metric.id,
-          metricName: metric.name,
-          value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
-        };
-      });
-      const selection = {
-        type: "cell" as const,
-        ...selections[0],
-        additionalSelections: selections.length > 1 ? selections.slice(1) : undefined,
-      };
-      // console.log('[AdTable] Calling onSelectionChange with (cells):', selection);
-      onSelectionChange(selection);
+    // Skip if no selection or no onSelectionChange handler
+    if (selectedCells.length === 0 || !onSelectionChange) {
+      if (typeof setShowAnalyzeButton === "function") {
+        setShowAnalyzeButton(false);
+      }
+      return;
     }
-  }, [selectedCells, selectionMode, activeMetrics, filteredData, onSelectionChange]);
+
+    // Show the analyze button if there are selections
+    if (typeof setShowAnalyzeButton === "function") {
+      setShowAnalyzeButton(selectedCells.length > 0);
+    }
+
+    // This will be our selection result
+    let selection: SelectedRange | null = null;
+
+    try {
+      if (selectionMode === "columns" && uniqueCols.length > 0) {
+        const metrics = uniqueCols.map((colIndex) => allMetrics[colIndex]);
+        if (!metrics[0]) return; // Guard against invalid metrics
+
+        const values = metrics.flatMap((metric: Metric) =>
+          filteredData.map((ad) => ({
+            adId: ad.id || "",
+            adName: ad.name || "",
+            metricId: metric.id,
+            metricName: metric.name,
+            value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
+          }))
+        );
+
+        selection = {
+          type: "column",
+          metricId: metrics[0]?.id,
+          metricName: metrics.map((m: Metric) => m.name).join(", "),
+          values,
+        };
+      } else if (selectionMode === "rows" && uniqueRows.length > 0) {
+        const ads = uniqueRows
+          .map((rowIndex) => filteredData[rowIndex])
+          .filter(Boolean);
+        if (!ads.length || !ads[0]) return; // Guard against invalid ads
+
+        const values = ads.flatMap((ad) =>
+          allMetrics.map((metric: Metric) => ({
+            adId: ad.id || "",
+            adName: ad.name || "",
+            metricId: metric.id,
+            metricName: metric.name,
+            value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
+          }))
+        );
+
+        selection = {
+          type: "row",
+          adId: ads[0]?.id || "",
+          adName: ads.map((ad) => ad.name || "").join(", "),
+          values,
+        };
+      } else if (selectedCells.length > 0) {
+        const selections = selectedCells
+          .map((cell) => {
+            // Guard against out-of-bounds access
+            if (
+              cell.row >= filteredData.length ||
+              cell.col >= allMetrics.length
+            )
+              return null;
+
+            const ad = filteredData[cell.row];
+            const metric = allMetrics[cell.col];
+
+            if (!ad || !metric) return null;
+
+            return {
+              adId: ad.id || "",
+              adName: ad.name || "",
+              metricId: metric.id,
+              metricName: metric.name,
+              value: metric.id === "name" ? ad.name : ad[metric.id as keyof Ad],
+            };
+          })
+          .filter(
+            (
+              item
+            ): item is {
+              adId: string;
+              adName: string;
+              metricId: string;
+              metricName: string;
+              value: any;
+            } => item !== null
+          );
+
+        if (selections.length === 0) return; // No valid selections
+
+        selection = {
+          type: "cell",
+          ...selections[0]!,
+          additionalSelections:
+            selections.length > 1 ? selections.slice(1) : undefined,
+        };
+      }
+
+      // Only call onSelectionChange if we have a valid selection
+      if (selection) {
+        onSelectionChange(selection);
+      }
+    } catch (error) {
+      console.error("Error in selection logic:", error);
+      // Reset selection state on error
+      setSelectedCells([]);
+      setSelectionMode("none");
+      if (typeof setShowAnalyzeButton === "function") {
+        setShowAnalyzeButton(false);
+      }
+      onSelectionChange(null);
+    }
+  }, [
+    selectedCells,
+    selectionMode,
+    uniqueCols,
+    uniqueRows,
+    allMetrics,
+    filteredData,
+    setShowAnalyzeButton,
+    onSelectionChange,
+  ]);
 
   // --- Cell selection checker (must be top-level) ---
   const isCellSelected = useCallback(
@@ -421,7 +549,12 @@ export function AdTable({ data, onSelectionChange, showDebug = false, showAnalyz
         <AIPanel
           isOpen={aiPanelOpen}
           onOpenChange={setAIPanelOpen}
-          selectedRange={getSelectionSummary(selectionMode as SelectionMode, selectedCells, activeMetrics, filteredData)}
+          selectedRange={getSelectionSummary(
+            selectionMode as SelectionMode,
+            selectedCells,
+            activeMetrics,
+            filteredData
+          )}
           adsData={filteredData}
         />
       )}
@@ -444,7 +577,10 @@ export function AdTable({ data, onSelectionChange, showDebug = false, showAnalyz
           <TableBody>
             {filteredData.length === 0 && (
               <TableRow>
-                <TableCell colSpan={activeMetrics.length + 2} className="text-center text-red-600">
+                <TableCell
+                  colSpan={activeMetrics.length + 2}
+                  className="text-center text-red-600"
+                >
                   No ads to display. See console for debug info.
                 </TableCell>
               </TableRow>
@@ -464,7 +600,10 @@ export function AdTable({ data, onSelectionChange, showDebug = false, showAnalyz
                   />
                   {showDebug && (
                     <TableRow className="bg-yellow-50">
-                      <TableCell colSpan={activeMetrics.length + 2} className="p-0">
+                      <TableCell
+                        colSpan={activeMetrics.length + 2}
+                        className="p-0"
+                      >
                         <AdTableDebugCell ad={ad} />
                       </TableCell>
                     </TableRow>

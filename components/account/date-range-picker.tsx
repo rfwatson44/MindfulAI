@@ -14,42 +14,44 @@ import {
 } from "@/components/ui/popover";
 
 export function DateRangePicker() {
-  console.log("[DateRangePicker] Render");
-  const [date, setDate] = React.useState<DateRange | undefined>({
+  // Prevent excessive logging
+  // console.log("[DateRangePicker] Render");
+
+  // Use stable reference for the initial date value
+  const initialDateRef = React.useRef<DateRange>({
     from: new Date(2024, 0, 20),
     to: new Date(),
   });
 
-  React.useEffect(() => {
-    console.log("[DateRangePicker] State changed:", date);
-  }, [date]);
+  const [date, setDate] = React.useState<DateRange | undefined>(
+    initialDateRef.current
+  );
+  const [isOpen, setIsOpen] = React.useState(false);
 
-  // Memoize defaultMonth so it doesn't change every render
-  const defaultMonth = React.useMemo(() => date?.from, [date?.from]);
-
-  // Prevent setDate from causing unnecessary re-renders
-  // Memoize handleSelect so it only changes when date.from or date.to change
+  // Handle selecting a date range
   const handleSelect = React.useCallback(
     (range: DateRange | undefined) => {
-      // Only update if the range actually changes
+      // Only update state if the range actually changes
       if (
-        (!date?.from && range?.from) ||
-        (!date?.to && range?.to) ||
+        !date?.from !== !range?.from || // from exists in one but not the other
+        !date?.to !== !range?.to || // to exists in one but not the other
         (date?.from &&
           range?.from &&
           date.from.getTime() !== range.from.getTime()) ||
         (date?.to && range?.to && date.to.getTime() !== range.to.getTime())
       ) {
-        console.log("[DateRangePicker] handleSelect: updating date", range);
         setDate(range);
       }
     },
-    [date?.from, date?.to]
+    [date]
   );
+
+  // Stabilize defaultMonth to prevent re-renders
+  const defaultMonth = React.useMemo(() => date?.from || new Date(), []);
 
   return (
     <div className="grid gap-2">
-      <Popover>
+      <Popover open={isOpen} onOpenChange={setIsOpen}>
         <PopoverTrigger asChild>
           <Button
             id="date"
@@ -74,15 +76,14 @@ export function DateRangePicker() {
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-auto p-0" align="start">
-          {/* <Calendar
+          <Calendar
             initialFocus
             mode="range"
-            // defaultMonth={defaultMonth} // TEMP: Commented out to test infinite render loop
+            defaultMonth={defaultMonth}
             selected={date}
             onSelect={handleSelect}
             numberOfMonths={2}
-          /> */}
-          <div>Calendar Placeholder</div>
+          />
         </PopoverContent>
       </Popover>
     </div>
