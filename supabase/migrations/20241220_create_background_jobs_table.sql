@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS background_jobs (
     completed_at TIMESTAMP WITH TIME ZONE,
     
     -- Add constraints
-    CONSTRAINT valid_status CHECK (status IN ('queued', 'processing', 'completed', 'failed')),
+    CONSTRAINT valid_status CHECK (status IN ('queued', 'processing', 'completed', 'failed', 'cancelled')),
     CONSTRAINT valid_progress CHECK (progress >= 0 AND progress <= 100)
 );
 
@@ -27,7 +27,7 @@ CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = NOW();
-    IF NEW.status = 'completed' OR NEW.status = 'failed' THEN
+    IF NEW.status = 'completed' OR NEW.status = 'failed' OR NEW.status = 'cancelled' THEN
         NEW.completed_at = NOW();
     END IF;
     RETURN NEW;

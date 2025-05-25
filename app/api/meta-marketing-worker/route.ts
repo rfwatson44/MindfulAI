@@ -464,7 +464,8 @@ async function handler(request: Request) {
           timeframe,
           payload.requestId,
           payload.after || "",
-          startTime
+          startTime,
+          payload.campaignIds || []
         );
         break;
 
@@ -761,7 +762,8 @@ async function processCampaignsPhase(
   timeframe: string,
   requestId: string,
   after: string,
-  startTime: number
+  startTime: number,
+  existingCampaignIds: string[] = []
 ) {
   // Check for cancellation at the start
   if (await checkJobCancellation(supabase, requestId)) {
@@ -770,6 +772,9 @@ async function processCampaignsPhase(
   }
 
   console.log(`Processing campaigns phase, after: ${after}`);
+  console.log(
+    `Existing campaign IDs from previous batches: ${existingCampaignIds.length}`
+  );
   console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
   const account = new AdAccount(accountId);
@@ -846,8 +851,12 @@ async function processCampaignsPhase(
 
   // Process campaigns with aggressive time checking
   const processedCampaigns = [];
-  const campaignIds = [];
+  const campaignIds = [...existingCampaignIds]; // Start with existing campaign IDs from previous batches
   let totalErrors = 0;
+
+  console.log(
+    `Starting with ${campaignIds.length} campaign IDs from previous batches`
+  );
 
   for (let i = 0; i < campaigns.length; i++) {
     // Check time limit more frequently
@@ -862,6 +871,7 @@ async function processCampaignsPhase(
         requestId,
         phase: "campaigns",
         after: after,
+        campaignIds: campaignIds,
       });
       break;
     }
@@ -960,12 +970,16 @@ async function processCampaignsPhase(
   }
 
   console.log(`Processed ${processedCampaigns.length} campaigns`);
+  console.log(`Campaign IDs collected in this batch: ${campaignIds.length}`);
+  console.log(`Campaign IDs: ${campaignIds.join(", ")}`);
 
   // Determine next action based on pagination
   if (nextCursor && campaigns.length === RATE_LIMIT_CONFIG.BATCH_SIZE) {
     // More campaigns to fetch
-    console.log("Creating follow-up job for next batch of campaigns");
+    console.log("🔄 Creating follow-up job for next batch of campaigns");
     console.log(`Next cursor: ${nextCursor}`);
+    console.log(`Campaigns processed so far: ${processedCampaigns.length}`);
+    console.log(`Campaign IDs collected so far: ${campaignIds.length}`);
     await createFollowUpJob({
       accountId,
       timeframe,
@@ -973,18 +987,35 @@ async function processCampaignsPhase(
       requestId,
       phase: "campaigns",
       after: nextCursor,
+      campaignIds: campaignIds,
     });
   } else {
     // All campaigns processed, move to adsets phase
-    console.log("All campaigns processed, starting adsets phase");
+    console.log("✅ ALL CAMPAIGNS FETCHED - MOVING TO ADSETS PHASE");
     console.log(`Total campaign IDs collected: ${campaignIds.length}`);
     console.log(
       `Campaign IDs: ${campaignIds.slice(0, 5).join(", ")}${
         campaignIds.length > 5 ? "..." : ""
       }`
     );
+
+    if (campaignIds.length === 0) {
+      console.log("⚠️ No campaigns found, completing job");
+      await updateJobStatus(supabase, requestId, "completed", 100);
+      return {
+        processedCampaigns: processedCampaigns.length,
+        campaignIds: [],
+        phase: "campaigns",
+        after: nextCursor || "",
+        remainingTime: getRemainingTime(startTime),
+        completed: true,
+        message: "No campaigns found to process",
+      };
+    }
+
     await updateJobStatus(supabase, requestId, "processing", 60);
 
+    console.log("🚀 Creating adsets phase job...");
     await createFollowUpJob({
       accountId,
       timeframe,
@@ -994,7 +1025,7 @@ async function processCampaignsPhase(
       campaignIds: campaignIds,
       after: "",
     });
-    console.log("Adsets phase job created successfully");
+    console.log("✅ Adsets phase job created successfully");
   }
 
   return {
@@ -1003,6 +1034,7 @@ async function processCampaignsPhase(
     phase: "campaigns",
     after: nextCursor || "",
     remainingTime: getRemainingTime(startTime),
+    completed: processedCampaigns.length > 0,
   };
 }
 
