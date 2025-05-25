@@ -87,7 +87,7 @@ interface ChunkedJobPayload extends MetaMarketingJobPayload {
   phase?: string; // 'account' | 'campaigns' | 'adsets' | 'ads'
   campaignIds?: string[];
   adsetIds?: string[];
-  offset?: number;
+  after?: string; // Cursor for pagination instead of offset
   totalItems?: number;
   processedItems?: number;
   accountInfo?: string; // JSON string for passing account info between phases
@@ -420,7 +420,7 @@ async function handler(request: Request) {
           supabase,
           timeframe,
           payload.requestId,
-          payload.offset || 0,
+          payload.after || "",
           startTime
         );
         break;
@@ -432,7 +432,7 @@ async function handler(request: Request) {
           timeframe,
           payload.requestId,
           payload.campaignIds || [],
-          payload.offset || 0,
+          payload.after || "",
           startTime
         );
         break;
@@ -444,7 +444,7 @@ async function handler(request: Request) {
           timeframe,
           payload.requestId,
           payload.adsetIds || [],
-          payload.offset || 0,
+          payload.after || "",
           startTime
         );
         break;
@@ -477,22 +477,24 @@ async function handler(request: Request) {
     console.error("Error details:", error);
     console.error("Error stack:", error.stack);
 
+    // Try to update job status to failed, but don't fail if we can't parse the request
     try {
-      const payload: ChunkedJobPayload = await request.json();
+      // Try to get requestId from URL or headers if available
+      const url = new URL(request.url);
+      const requestIdFromHeader = request.headers.get("X-Request-ID");
+      const requestId = requestIdFromHeader || "unknown";
+
       console.log("Updating job status to failed...");
       await updateJobStatus(
         supabase,
-        payload.requestId,
+        requestId,
         "failed",
         0,
         error.message || "Unknown error occurred"
       );
       console.log("Job status updated to failed");
-    } catch (parseError) {
-      console.error(
-        "Could not parse request payload for error handling:",
-        parseError
-      );
+    } catch (updateError) {
+      console.error("Error updating job status to failed:", updateError);
     }
 
     return Response.json(
@@ -532,7 +534,7 @@ async function processAccountPhase(
       action: "get24HourData",
       requestId,
       phase: "account",
-      offset: 0,
+      after: "",
     });
     return { phase: "account", status: "deferred_due_to_time_limit" };
   }
@@ -578,6 +580,7 @@ async function processAccountPhase(
       requestId,
       phase: "account-insights",
       accountInfo: JSON.stringify(accountInfo),
+      after: "",
     });
     return { phase: "account", status: "partial_completion", accountInfo };
   }
@@ -686,7 +689,7 @@ async function processAccountPhase(
     action: "get24HourData",
     requestId,
     phase: "campaigns",
-    offset: 0,
+    after: "",
   });
 
   console.log("Campaigns phase job created");
@@ -705,10 +708,10 @@ async function processCampaignsPhase(
   supabase: any,
   timeframe: string,
   requestId: string,
-  offset: number,
+  after: string,
   startTime: number
 ) {
-  console.log(`Processing campaigns phase, offset: ${offset}`);
+  console.log(`Processing campaigns phase, after: ${after}`);
   console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
   const account = new AdAccount(accountId);
@@ -722,14 +725,23 @@ async function processCampaignsPhase(
       action: "get24HourData",
       requestId,
       phase: "campaigns",
-      offset: offset,
+      after: after,
     });
-    return { phase: "campaigns", status: "deferred_due_to_time_limit", offset };
+    return { phase: "campaigns", status: "deferred_due_to_time_limit", after };
   }
 
-  // Get campaigns with pagination
-  const campaigns = await withRateLimitRetry(
+  // Get campaigns with cursor-based pagination
+  const campaignsResponse = await withRateLimitRetry(
     async () => {
+      const params: any = {
+        limit: RATE_LIMIT_CONFIG.BATCH_SIZE,
+      };
+
+      // Only add 'after' parameter if it's not empty
+      if (after && after.trim() !== "") {
+        params.after = after;
+      }
+
       return account.getCampaigns(
         [
           "name",
@@ -752,10 +764,7 @@ async function processCampaignsPhase(
           "start_time",
           "end_time",
         ],
-        {
-          limit: RATE_LIMIT_CONFIG.BATCH_SIZE,
-          offset: offset,
-        }
+        params
       );
     },
     {
@@ -767,7 +776,15 @@ async function processCampaignsPhase(
     }
   );
 
+  // Extract campaigns and pagination info
+  const campaigns = Array.isArray(campaignsResponse)
+    ? campaignsResponse
+    : (campaignsResponse as any).data || [];
+  const paging = (campaignsResponse as any).paging || null;
+  const nextCursor = paging?.cursors?.after || null;
+
   console.log(`Retrieved ${campaigns.length} campaigns`);
+  console.log(`Next cursor: ${nextCursor || "none"}`);
 
   // Process campaigns with aggressive time checking
   const processedCampaigns = [];
@@ -785,15 +802,14 @@ async function processCampaignsPhase(
         action: "get24HourData",
         requestId,
         phase: "campaigns",
-        offset: offset + i,
+        after: after,
       });
       break;
     }
 
     const campaign = campaigns[i];
     const progress =
-      40 +
-      Math.floor(((offset + i) / Math.max(1, campaigns.length + offset)) * 20); // 40% to 60%
+      40 + Math.floor(((i + 1) / Math.max(1, campaigns.length)) * 20); // 40% to 60%
     await updateJobStatus(supabase, requestId, "processing", progress);
 
     console.log(
@@ -884,14 +900,9 @@ async function processCampaignsPhase(
 
   console.log(`Processed ${processedCampaigns.length} campaigns`);
 
-  // Determine next action based on what we processed
-  const totalProcessed = offset + processedCampaigns.length;
-
-  // If we processed all campaigns in this batch and there might be more
-  if (
-    campaigns.length === RATE_LIMIT_CONFIG.BATCH_SIZE &&
-    processedCampaigns.length === campaigns.length
-  ) {
+  // Determine next action based on pagination
+  if (nextCursor && campaigns.length === RATE_LIMIT_CONFIG.BATCH_SIZE) {
+    // More campaigns to fetch
     console.log("Creating follow-up job for next batch of campaigns");
     await createFollowUpJob({
       accountId,
@@ -899,7 +910,7 @@ async function processCampaignsPhase(
       action: "get24HourData",
       requestId,
       phase: "campaigns",
-      offset: totalProcessed,
+      after: nextCursor,
     });
   } else {
     // All campaigns processed, move to adsets phase
@@ -913,7 +924,7 @@ async function processCampaignsPhase(
       requestId,
       phase: "adsets",
       campaignIds: campaignIds,
-      offset: 0,
+      after: "",
     });
   }
 
@@ -921,7 +932,7 @@ async function processCampaignsPhase(
     processedCampaigns: processedCampaigns.length,
     campaignIds,
     phase: "campaigns",
-    offset: totalProcessed,
+    after: nextCursor || "",
     remainingTime: getRemainingTime(startTime),
   };
 }
@@ -933,11 +944,11 @@ async function processAdsetsPhase(
   timeframe: string,
   requestId: string,
   campaignIds: string[],
-  offset: number,
+  after: string,
   startTime: number
 ) {
   console.log(
-    `Processing adsets phase for campaigns: ${campaignIds.length}, offset: ${offset}`
+    `Processing adsets phase for campaigns: ${campaignIds.length}, after: ${after}`
   );
   console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
@@ -951,9 +962,9 @@ async function processAdsetsPhase(
       requestId,
       phase: "adsets",
       campaignIds,
-      offset: offset,
+      after: after,
     });
-    return { phase: "adsets", status: "deferred_due_to_time_limit", offset };
+    return { phase: "adsets", status: "deferred_due_to_time_limit", after };
   }
 
   // Update progress
@@ -964,10 +975,7 @@ async function processAdsetsPhase(
   const adsetIds = [];
 
   // Process campaigns in small batches to get their adsets
-  const campaignsToProcess = campaignIds.slice(
-    offset,
-    offset + RATE_LIMIT_CONFIG.BATCH_SIZE
-  );
+  const campaignsToProcess = campaignIds.slice(0, RATE_LIMIT_CONFIG.BATCH_SIZE);
 
   for (let i = 0; i < campaignsToProcess.length; i++) {
     // Check time limit frequently
@@ -982,7 +990,7 @@ async function processAdsetsPhase(
         requestId,
         phase: "adsets",
         campaignIds,
-        offset: offset + i,
+        after: after,
       });
       break;
     }
@@ -1118,7 +1126,7 @@ async function processAdsetsPhase(
   console.log(`Processed ${processedAdsets.length} adsets`);
 
   // Determine next action
-  const totalProcessed = offset + campaignsToProcess.length;
+  const totalProcessed = campaignsToProcess.length;
 
   if (totalProcessed < campaignIds.length) {
     // More campaigns to process for adsets
@@ -1130,7 +1138,7 @@ async function processAdsetsPhase(
       requestId,
       phase: "adsets",
       campaignIds,
-      offset: totalProcessed,
+      after: after,
     });
   } else {
     // All adsets processed, move to ads phase
@@ -1144,7 +1152,7 @@ async function processAdsetsPhase(
       requestId,
       phase: "ads",
       adsetIds: adsetIds,
-      offset: 0,
+      after: after,
     });
   }
 
@@ -1152,7 +1160,7 @@ async function processAdsetsPhase(
     processedAdsets: processedAdsets.length,
     adsetIds,
     phase: "adsets",
-    offset: totalProcessed,
+    after: after,
     remainingTime: getRemainingTime(startTime),
   };
 }
@@ -1164,11 +1172,11 @@ async function processAdsPhase(
   timeframe: string,
   requestId: string,
   adsetIds: string[],
-  offset: number,
+  after: string,
   startTime: number
 ) {
   console.log(
-    `Processing ads phase for adsets: ${adsetIds.length}, offset: ${offset}`
+    `Processing ads phase for adsets: ${adsetIds.length}, after: ${after}`
   );
   console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
@@ -1182,9 +1190,9 @@ async function processAdsPhase(
       requestId,
       phase: "ads",
       adsetIds,
-      offset: offset,
+      after: after,
     });
-    return { phase: "ads", status: "deferred_due_to_time_limit", offset };
+    return { phase: "ads", status: "deferred_due_to_time_limit", after };
   }
 
   // Update progress
@@ -1193,10 +1201,7 @@ async function processAdsPhase(
   const processedAds = [];
 
   // Process adsets in small batches to get their ads
-  const adsetsToProcess = adsetIds.slice(
-    offset,
-    offset + RATE_LIMIT_CONFIG.BATCH_SIZE
-  );
+  const adsetsToProcess = adsetIds.slice(0, RATE_LIMIT_CONFIG.BATCH_SIZE);
 
   for (let i = 0; i < adsetsToProcess.length; i++) {
     // Check time limit frequently
@@ -1209,7 +1214,7 @@ async function processAdsPhase(
         requestId,
         phase: "ads",
         adsetIds,
-        offset: offset + i,
+        after: after,
       });
       break;
     }
@@ -1329,7 +1334,7 @@ async function processAdsPhase(
   console.log(`Processed ${processedAds.length} ads`);
 
   // Determine next action
-  const totalProcessed = offset + adsetsToProcess.length;
+  const totalProcessed = adsetsToProcess.length;
 
   if (totalProcessed < adsetIds.length) {
     // More adsets to process for ads
@@ -1341,7 +1346,7 @@ async function processAdsPhase(
       requestId,
       phase: "ads",
       adsetIds,
-      offset: totalProcessed,
+      after: after,
     });
   } else {
     // All ads processed, mark as completed
@@ -1360,7 +1365,7 @@ async function processAdsPhase(
   return {
     processedAds: processedAds.length,
     phase: "ads",
-    offset: totalProcessed,
+    after: after,
     remainingTime: getRemainingTime(startTime),
     completed: totalProcessed >= adsetIds.length,
   };
