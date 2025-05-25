@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
-import { FacebookAdsApi, AdAccount } from "facebook-nodejs-business-sdk";
+import {
+  FacebookAdsApi,
+  AdAccount,
+  Campaign,
+  AdSet,
+} from "facebook-nodejs-business-sdk";
 import { createClient } from "@/utils/supabase/server";
 import { MetaMarketingJobPayload } from "@/app/actions/meta-marketing-queue";
 import { Client } from "@upstash/qstash";
@@ -1014,47 +1019,44 @@ async function processAdsetsPhase(
     return { phase: "adsets", status: "cancelled" };
   }
 
-  console.log("=== ADSETS PHASE STARTED ===");
-  console.log(
-    `Processing adsets phase for campaigns: ${campaignIds.length}, after: ${after}`
-  );
-  console.log(
-    `Campaign IDs received: ${campaignIds.slice(0, 5).join(", ")}${
-      campaignIds.length > 5 ? "..." : ""
-    }`
-  );
-  console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
+  // Ensure account exists in meta_account_insights before processing adsets
+  const { data: accountExists, error: accountCheckError } = await supabase
+    .from("meta_account_insights")
+    .select("account_id")
+    .eq("account_id", accountId)
+    .single();
 
-  // Check time before starting
-  if (shouldCreateFollowUpJob(startTime)) {
-    console.log("Time limit approaching, creating follow-up job immediately");
-    await createFollowUpJob({
-      accountId,
-      timeframe,
-      action: "get24HourData",
-      requestId,
-      phase: "adsets",
-      campaignIds,
-      after: after,
-    });
-    return { phase: "adsets", status: "deferred_due_to_time_limit", after };
+  if (accountCheckError || !accountExists) {
+    console.error(
+      "Account not found in meta_account_insights:",
+      accountCheckError
+    );
+    throw new Error(
+      `Account ${accountId} must be processed before adsets. Please run account phase first.`
+    );
   }
 
-  // Update progress
-  await updateJobStatus(supabase, requestId, "processing", 70);
+  console.log("Processing adsets phase...");
+  console.log(`Campaign IDs to process: ${campaignIds.length}`);
+  console.log(`After cursor: ${after || "none"}`);
+  console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
-  const account = new AdAccount(accountId);
+  // Process campaigns in batches
+  const batchSize = Math.min(RATE_LIMIT_CONFIG.BATCH_SIZE, campaignIds.length);
+  const currentBatch = campaignIds.slice(0, batchSize);
+  const remainingCampaigns = campaignIds.slice(batchSize);
+
+  console.log(`Processing batch of ${currentBatch.length} campaigns`);
+  console.log(`Remaining campaigns: ${remainingCampaigns.length}`);
+
   const processedAdsets = [];
   const adsetIds = [];
 
-  // Process campaigns in small batches to get their adsets
-  const campaignsToProcess = campaignIds.slice(0, RATE_LIMIT_CONFIG.BATCH_SIZE);
-
-  for (let i = 0; i < campaignsToProcess.length; i++) {
-    // Check time limit frequently
+  for (let i = 0; i < currentBatch.length; i++) {
+    // Check time limit more frequently
     if (shouldCreateFollowUpJob(startTime)) {
       console.log(
-        `Time limit reached after processing ${i} campaigns for adsets`
+        `Time limit reached after processing ${i} campaigns, creating follow-up job`
       );
       await createFollowUpJob({
         accountId,
@@ -1062,25 +1064,29 @@ async function processAdsetsPhase(
         action: "get24HourData",
         requestId,
         phase: "adsets",
-        campaignIds,
-        after: after,
+        campaignIds: [...currentBatch.slice(i), ...remainingCampaigns],
+        after: "",
       });
       break;
     }
 
-    const campaignId = campaignsToProcess[i];
+    const campaignId = currentBatch[i];
+    const progress =
+      60 + Math.floor(((i + 1) / Math.max(1, currentBatch.length)) * 20); // 60% to 80%
+    await updateJobStatus(supabase, requestId, "processing", progress);
+
     console.log(
-      `Getting adsets for campaign ${campaignId}, remaining time: ${getRemainingTime(
-        startTime
-      )}ms`
+      `Processing campaign ${i + 1}/${
+        currentBatch.length
+      } (${campaignId}), remaining time: ${getRemainingTime(startTime)}ms`
     );
 
     try {
+      const campaign = new Campaign(campaignId);
+
       // Get adsets for this campaign
-      const adsets = await withRateLimitRetry(
+      const adsetsResponse = await withRateLimitRetry(
         async () => {
-          const campaign =
-            new (require("facebook-nodejs-business-sdk").Campaign)(campaignId);
           return campaign.getAdSets(
             [
               "name",
@@ -1090,14 +1096,11 @@ async function processAdsetsPhase(
               "optimization_goal",
               "billing_event",
               "bid_amount",
-              "budget_remaining",
               "daily_budget",
               "lifetime_budget",
               "targeting",
               "start_time",
               "end_time",
-              "created_time",
-              "updated_time",
             ],
             { limit: 50 }
           );
@@ -1111,20 +1114,16 @@ async function processAdsetsPhase(
         }
       );
 
-      console.log(
-        `Retrieved ${adsets.length} adsets for campaign ${campaignId}`
-      );
+      const adsets = Array.isArray(adsetsResponse)
+        ? adsetsResponse
+        : (adsetsResponse as any).data || [];
+
+      console.log(`Found ${adsets.length} adsets for campaign ${campaignId}`);
 
       // Process each adset
       for (const adset of adsets) {
-        // Check time for each adset
-        if (shouldCreateFollowUpJob(startTime)) {
-          console.log("Time limit reached during adset processing");
-          break;
-        }
-
         try {
-          // Skip insights if running low on time
+          // Get insights for this adset if we have time
           let adsetInsights = null;
           if (getRemainingTime(startTime) > 15000) {
             // Only get insights if we have more than 15 seconds
@@ -1138,28 +1137,30 @@ async function processAdsetsPhase(
             console.log("Skipping adset insights due to time constraints");
           }
 
+          // Create simplified adset data structure
           const adsetData = {
             ad_set_id: adset.id,
             campaign_id: campaignId,
             account_id: accountId,
-            name: adset.name,
-            status: adset.status,
-            configured_status: adset.configured_status,
-            effective_status: adset.effective_status,
-            optimization_goal: adset.optimization_goal,
-            billing_event: adset.billing_event,
-            bid_amount: parseFloat(adset.bid_amount) || 0,
-            budget_remaining: parseFloat(adset.budget_remaining) || 0,
-            daily_budget: parseFloat(adset.daily_budget) || 0,
-            lifetime_budget: parseFloat(adset.lifetime_budget) || 0,
-            targeting: adset.targeting || {},
-            start_time: adset.start_time ? new Date(adset.start_time) : null,
-            end_time: adset.end_time ? new Date(adset.end_time) : null,
-            created_time: adset.created_time
-              ? new Date(adset.created_time)
+            name: adset.name || "",
+            status: adset.status || "UNKNOWN",
+            configured_status: adset.configured_status || null,
+            effective_status: adset.effective_status || null,
+            optimization_goal: adset.optimization_goal || null,
+            billing_event: adset.billing_event || null,
+            bid_amount: adset.bid_amount ? parseFloat(adset.bid_amount) : null,
+            daily_budget: adset.daily_budget
+              ? parseFloat(adset.daily_budget)
               : null,
-            updated_time: adset.updated_time
-              ? new Date(adset.updated_time)
+            lifetime_budget: adset.lifetime_budget
+              ? parseFloat(adset.lifetime_budget)
+              : null,
+            targeting: adset.targeting || null,
+            start_time: adset.start_time
+              ? new Date(adset.start_time).toISOString()
+              : null,
+            end_time: adset.end_time
+              ? new Date(adset.end_time).toISOString()
               : null,
             impressions: safeParseInt(adsetInsights?.impressions),
             clicks: safeParseInt(adsetInsights?.clicks),
@@ -1180,10 +1181,17 @@ async function processAdsetsPhase(
                     0
                   )
                 : null,
-            last_updated: new Date(),
-            created_at: new Date(),
-            updated_at: new Date(),
+            last_updated: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
           };
+
+          console.log(`Attempting to store adset ${adset.id} with data:`, {
+            ad_set_id: adsetData.ad_set_id,
+            campaign_id: adsetData.campaign_id,
+            name: adsetData.name,
+            status: adsetData.status,
+          });
 
           const { error: adsetError } = await supabase
             .from("meta_ad_sets")
@@ -1192,11 +1200,20 @@ async function processAdsetsPhase(
               ignoreDuplicates: false,
             });
 
-          if (!adsetError) {
+          if (adsetError) {
+            console.error(`Error storing adset ${adset.id}:`, adsetError);
+            console.error(
+              `Adset data that failed:`,
+              JSON.stringify(adsetData, null, 2)
+            );
+            // Continue processing other adsets even if one fails
+          } else {
             processedAdsets.push(adsetData);
             adsetIds.push(adset.id);
+            console.log(`Successfully stored adset ${adset.id}`);
           }
 
+          // Small delay between adsets
           await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
         } catch (error) {
           console.error(`Error processing adset ${adset.id}:`, error);
@@ -1204,9 +1221,10 @@ async function processAdsetsPhase(
         }
       }
 
+      // Delay between campaigns
       await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
     } catch (error) {
-      console.error(`Error getting adsets for campaign ${campaignId}:`, error);
+      console.error(`Error processing campaign ${campaignId}:`, error);
       continue;
     }
   }
@@ -1214,33 +1232,22 @@ async function processAdsetsPhase(
   console.log(`Processed ${processedAdsets.length} adsets`);
 
   // Determine next action
-  const totalProcessed = campaignsToProcess.length;
-
-  if (totalProcessed < campaignIds.length) {
-    // More campaigns to process for adsets
-    console.log("Creating follow-up job for next batch of campaigns (adsets)");
-    console.log(
-      `Processed ${totalProcessed} of ${campaignIds.length} campaigns`
-    );
-
-    // Pass the remaining campaign IDs to the next job
-    const remainingCampaignIds = campaignIds.slice(
-      RATE_LIMIT_CONFIG.BATCH_SIZE
-    );
-    console.log(`Remaining campaigns: ${remainingCampaignIds.length}`);
-
+  if (remainingCampaigns.length > 0) {
+    // More campaigns to process
+    console.log("Creating follow-up job for remaining campaigns");
+    console.log(`Remaining campaigns: ${remainingCampaigns.length}`);
     await createFollowUpJob({
       accountId,
       timeframe,
       action: "get24HourData",
       requestId,
       phase: "adsets",
-      campaignIds: remainingCampaignIds, // Pass remaining campaigns, not all campaigns
-      after: after,
+      campaignIds: remainingCampaigns,
+      after: "",
     });
   } else {
-    // All adsets processed, move to ads phase
-    console.log("All adsets processed, starting ads phase");
+    // All campaigns processed, move to ads phase
+    console.log("All campaigns processed, starting ads phase");
     console.log(`Total adset IDs collected: ${adsetIds.length}`);
     console.log(
       `Adset IDs: ${adsetIds.slice(0, 5).join(", ")}${
@@ -1249,23 +1256,28 @@ async function processAdsetsPhase(
     );
     await updateJobStatus(supabase, requestId, "processing", 80);
 
-    await createFollowUpJob({
-      accountId,
-      timeframe,
-      action: "get24HourData",
-      requestId,
-      phase: "ads",
-      adsetIds: adsetIds,
-      after: "",
-    });
-    console.log("Ads phase job created successfully");
+    if (adsetIds.length > 0) {
+      await createFollowUpJob({
+        accountId,
+        timeframe,
+        action: "get24HourData",
+        requestId,
+        phase: "ads",
+        adsetIds: adsetIds,
+        after: "",
+      });
+      console.log("Ads phase job created successfully");
+    } else {
+      console.log("No adsets found, completing job");
+      await updateJobStatus(supabase, requestId, "completed", 100);
+    }
   }
 
   return {
     processedAdsets: processedAdsets.length,
     adsetIds,
     phase: "adsets",
-    after: after,
+    remainingCampaigns: remainingCampaigns.length,
     remainingTime: getRemainingTime(startTime),
   };
 }
@@ -1341,9 +1353,7 @@ async function processAdsPhase(
       // First get the adset to get the campaign_id
       const adsetInfo = await withRateLimitRetry(
         async () => {
-          const adset = new (require("facebook-nodejs-business-sdk").AdSet)(
-            adsetId
-          );
+          const adset = new AdSet(adsetId);
           return adset.read(["campaign_id"]);
         },
         {
@@ -1360,9 +1370,7 @@ async function processAdsPhase(
       // Get ads for this adset
       const ads = await withRateLimitRetry(
         async () => {
-          const adset = new (require("facebook-nodejs-business-sdk").AdSet)(
-            adsetId
-          );
+          const adset = new AdSet(adsetId);
           return adset.getAds(
             [
               "name",
@@ -1416,14 +1424,14 @@ async function processAdsPhase(
             ad_id: ad.id,
             ad_set_id: adsetId,
             account_id: accountId,
-            name: ad.name,
-            status: ad.status,
-            configured_status: ad.configured_status,
-            effective_status: ad.effective_status,
-            creative: ad.creative || {},
-            tracking_specs: ad.tracking_specs || [],
-            conversion_specs: ad.conversion_specs || [],
             campaign_id: campaignId,
+            name: ad.name || "",
+            status: ad.status || "UNKNOWN",
+            configured_status: ad.configured_status || null,
+            effective_status: ad.effective_status || null,
+            creative: ad.creative || null,
+            tracking_specs: ad.tracking_specs || null,
+            conversion_specs: ad.conversion_specs || null,
             impressions: safeParseInt(adInsights?.impressions),
             clicks: safeParseInt(adInsights?.clicks),
             reach: safeParseInt(adInsights?.reach),
@@ -1443,10 +1451,18 @@ async function processAdsPhase(
                     0
                   )
                 : null,
-            created_at: new Date(),
-            updated_at: new Date(),
-            last_updated: new Date(),
+            last_updated: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
           };
+
+          console.log(`Attempting to store ad ${ad.id} with data:`, {
+            ad_id: adData.ad_id,
+            ad_set_id: adData.ad_set_id,
+            campaign_id: adData.campaign_id,
+            name: adData.name,
+            status: adData.status,
+          });
 
           const { error: adError } = await supabase
             .from("meta_ads")
@@ -1455,8 +1471,16 @@ async function processAdsPhase(
               ignoreDuplicates: false,
             });
 
-          if (!adError) {
+          if (adError) {
+            console.error(`Error storing ad ${ad.id}:`, adError);
+            console.error(
+              `Ad data that failed:`,
+              JSON.stringify(adData, null, 2)
+            );
+            // Continue processing other ads even if one fails
+          } else {
             processedAds.push(adData);
+            console.log(`Successfully stored ad ${ad.id}`);
           }
 
           await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
