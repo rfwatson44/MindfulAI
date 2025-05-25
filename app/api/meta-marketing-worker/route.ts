@@ -151,6 +151,35 @@ async function updateJobStatus(
   }
 }
 
+// Check if job has been cancelled
+async function checkJobCancellation(
+  supabase: any,
+  requestId: string
+): Promise<boolean> {
+  try {
+    const { data: job, error } = await supabase
+      .from("background_jobs")
+      .select("status")
+      .eq("request_id", requestId)
+      .single();
+
+    if (error) {
+      console.error("Error checking job cancellation:", error);
+      return false; // Continue processing if we can't check
+    }
+
+    const isCancelled = job?.status === "cancelled";
+    if (isCancelled) {
+      console.log(`Job ${requestId} has been cancelled by user`);
+    }
+
+    return isCancelled;
+  } catch (err) {
+    console.error("Error in checkJobCancellation:", err);
+    return false; // Continue processing if we can't check
+  }
+}
+
 // Create follow-up job for next phase
 async function createFollowUpJob(payload: ChunkedJobPayload) {
   try {
@@ -528,6 +557,12 @@ async function processAccountPhase(
   requestId: string,
   startTime: number
 ) {
+  // Check for cancellation at the start
+  if (await checkJobCancellation(supabase, requestId)) {
+    console.log("Job cancelled, stopping account phase");
+    return { phase: "account", status: "cancelled" };
+  }
+
   const account = new AdAccount(accountId);
   const dateRange = getDateRangeForTimeframe(timeframe);
 
@@ -723,6 +758,12 @@ async function processCampaignsPhase(
   after: string,
   startTime: number
 ) {
+  // Check for cancellation at the start
+  if (await checkJobCancellation(supabase, requestId)) {
+    console.log("Job cancelled, stopping campaigns phase");
+    return { phase: "campaigns", status: "cancelled" };
+  }
+
   console.log(`Processing campaigns phase, after: ${after}`);
   console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
@@ -967,6 +1008,12 @@ async function processAdsetsPhase(
   after: string,
   startTime: number
 ) {
+  // Check for cancellation at the start
+  if (await checkJobCancellation(supabase, requestId)) {
+    console.log("Job cancelled, stopping adsets phase");
+    return { phase: "adsets", status: "cancelled" };
+  }
+
   console.log("=== ADSETS PHASE STARTED ===");
   console.log(
     `Processing adsets phase for campaigns: ${campaignIds.length}, after: ${after}`
@@ -1233,6 +1280,12 @@ async function processAdsPhase(
   after: string,
   startTime: number
 ) {
+  // Check for cancellation at the start
+  if (await checkJobCancellation(supabase, requestId)) {
+    console.log("Job cancelled, stopping ads phase");
+    return { phase: "ads", status: "cancelled" };
+  }
+
   console.log(
     `Processing ads phase for adsets: ${adsetIds.length}, after: ${after}`
   );

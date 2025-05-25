@@ -9,6 +9,8 @@ export default function MetaMarketingTest() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [data, setData] = useState<any>(null);
+  const [currentRequestId, setCurrentRequestId] = useState<string | null>(null);
+  const [isStoppingJob, setIsStoppingJob] = useState(false);
 
   // Define the fetch functions for different data types
   const fetchAccountInfo = async (accountId: string, timeframe: string) => {
@@ -45,11 +47,56 @@ export default function MetaMarketingTest() {
     return response.json();
   };
 
+  // Function to stop background job
+  const stopBackgroundJob = async () => {
+    if (!currentRequestId) {
+      alert("No running job to stop");
+      return;
+    }
+
+    setIsStoppingJob(true);
+    try {
+      const response = await fetch(`/api/meta-marketing-daily/stop`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          requestId: currentRequestId,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to stop job");
+      }
+
+      const result = await response.json();
+      alert(`Job stopped successfully: ${result.message}`);
+
+      // Reset states
+      setCurrentRequestId(null);
+      setIsLoading(false);
+      setData(null);
+      setError(null);
+    } catch (err) {
+      console.error("Error stopping job:", err);
+      alert(
+        `Error stopping job: ${
+          err instanceof Error ? err.message : "Unknown error"
+        }`
+      );
+    } finally {
+      setIsStoppingJob(false);
+    }
+  };
+
   // Combined fetch function
   const fetchAllData = async () => {
     if (!accountId) return null;
     setIsLoading(true);
     setError(null);
+    setCurrentRequestId(null);
 
     try {
       // Always use the enhanced api/meta-marketing-daily endpoint
@@ -60,16 +107,23 @@ export default function MetaMarketingTest() {
         // For 24h timeframe, use get24HourData
         const dailyData = await fetchData(accountId, timeframeParam);
         setData(dailyData);
+        // Extract request ID if it's a background job
+        if (dailyData.requestId) {
+          setCurrentRequestId(dailyData.requestId);
+        }
       } else {
         // For 6-month timeframe, we now also use the same approach but with the 6-month timeframe parameter
         const dailyData = await fetchData(accountId, timeframeParam);
         setData(dailyData);
+        // Extract request ID if it's a background job
+        if (dailyData.requestId) {
+          setCurrentRequestId(dailyData.requestId);
+        }
       }
     } catch (err) {
       setError(
         err instanceof Error ? err : new Error("An unknown error occurred")
       );
-    } finally {
       setIsLoading(false);
     }
   };
@@ -141,7 +195,7 @@ export default function MetaMarketingTest() {
             </div>
           </div>
 
-          <div>
+          <div className="flex gap-4">
             <button
               type="submit"
               disabled={isLoading || !accountId}
@@ -149,7 +203,30 @@ export default function MetaMarketingTest() {
             >
               {isLoading ? "Loading..." : "Fetch Data"}
             </button>
+
+            {(isLoading || currentRequestId) && (
+              <button
+                type="button"
+                onClick={stopBackgroundJob}
+                disabled={isStoppingJob}
+                className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 disabled:bg-red-300"
+              >
+                {isStoppingJob ? "Stopping..." : "Stop Background Job"}
+              </button>
+            )}
           </div>
+
+          {currentRequestId && (
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-md">
+              <p className="text-sm text-blue-800">
+                <strong>Background Job Running:</strong> {currentRequestId}
+              </p>
+              <p className="text-xs text-blue-600 mt-1">
+                This job is running in the background. You can stop it using the
+                button above.
+              </p>
+            </div>
+          )}
         </div>
       </form>
 
@@ -160,6 +237,11 @@ export default function MetaMarketingTest() {
             Loading data... This might take some time depending on the account
             size.
           </p>
+          {currentRequestId && (
+            <p className="text-sm text-gray-600 mt-2">
+              Job ID: {currentRequestId}
+            </p>
+          )}
         </div>
       )}
 
@@ -191,6 +273,12 @@ export default function MetaMarketingTest() {
             {data.message && (
               <div className="p-2 bg-blue-50 rounded mb-2">
                 <p className="text-blue-700">{data.message}</p>
+              </div>
+            )}
+
+            {data.requestId && (
+              <div className="p-2 bg-purple-50 rounded mb-2">
+                <p className="text-purple-700">Request ID: {data.requestId}</p>
               </div>
             )}
 
