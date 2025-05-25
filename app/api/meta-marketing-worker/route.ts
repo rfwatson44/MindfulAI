@@ -52,11 +52,12 @@ const RATE_LIMIT_CONFIG = {
     WRITE: 3,
     INSIGHTS: 2,
   },
-  BATCH_SIZE: 10, // Reduced batch size for chunked processing
-  MIN_DELAY: 1000,
-  BURST_DELAY: 2000,
-  INSIGHTS_DELAY: 3000,
-  MAX_PROCESSING_TIME: 75000, // 75 seconds to stay under Vercel limit
+  BATCH_SIZE: 5, // Further reduced batch size for more aggressive chunking
+  MIN_DELAY: 500, // Reduced delay for faster processing
+  BURST_DELAY: 1000, // Reduced burst delay
+  INSIGHTS_DELAY: 1500, // Reduced insights delay
+  MAX_PROCESSING_TIME: 60000, // 60 seconds to stay well under Vercel limit
+  SAFETY_BUFFER: 10000, // 10 second safety buffer
 };
 
 // Meta API configuration
@@ -67,6 +68,20 @@ const META_CONFIG = {
 // Helper function to delay execution
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Time management helper
+function shouldCreateFollowUpJob(startTime: number): boolean {
+  const elapsedTime = Date.now() - startTime;
+  return (
+    elapsedTime >
+    RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME - RATE_LIMIT_CONFIG.SAFETY_BUFFER
+  );
+}
+
+function getRemainingTime(startTime: number): number {
+  const elapsedTime = Date.now() - startTime;
+  return Math.max(0, RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME - elapsedTime);
+}
+
 // Extended job payload for chunked processing
 interface ChunkedJobPayload extends MetaMarketingJobPayload {
   phase?: string; // 'account' | 'campaigns' | 'adsets' | 'ads'
@@ -75,6 +90,7 @@ interface ChunkedJobPayload extends MetaMarketingJobPayload {
   offset?: number;
   totalItems?: number;
   processedItems?: number;
+  accountInfo?: string; // JSON string for passing account info between phases
 }
 
 // Job status tracking
@@ -502,9 +518,24 @@ async function processAccountPhase(
   const dateRange = getDateRangeForTimeframe(timeframe);
 
   console.log("Processing account phase...");
+  console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
   // Update progress
   await updateJobStatus(supabase, requestId, "processing", 15);
+
+  // Check time before proceeding
+  if (shouldCreateFollowUpJob(startTime)) {
+    console.log("Time limit approaching, creating follow-up job immediately");
+    await createFollowUpJob({
+      accountId,
+      timeframe,
+      action: "get24HourData",
+      requestId,
+      phase: "account",
+      offset: 0,
+    });
+    return { phase: "account", status: "deferred_due_to_time_limit" };
+  }
 
   // Get account info
   const accountInfo = await withRateLimitRetry(
@@ -534,6 +565,22 @@ async function processAccountPhase(
   );
 
   await updateJobStatus(supabase, requestId, "processing", 25);
+
+  // Check time again
+  if (shouldCreateFollowUpJob(startTime)) {
+    console.log(
+      "Time limit approaching after account info, creating follow-up job"
+    );
+    await createFollowUpJob({
+      accountId,
+      timeframe,
+      action: "get24HourData",
+      requestId,
+      phase: "account-insights",
+      accountInfo: JSON.stringify(accountInfo),
+    });
+    return { phase: "account", status: "partial_completion", accountInfo };
+  }
 
   // Get account insights
   const insights = await withRateLimitRetry(
@@ -627,40 +674,28 @@ async function processAccountPhase(
   }
 
   console.log("Account data stored successfully");
+  console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
-  // Check if we have time to start campaigns phase
-  const elapsedTime = Date.now() - startTime;
-  if (elapsedTime < RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME) {
-    console.log("Starting campaigns phase in same job...");
-    await updateJobStatus(supabase, requestId, "processing", 40);
+  // Always create follow-up job for campaigns to ensure we don't timeout
+  console.log("Account phase completed, creating follow-up job for campaigns");
+  await updateJobStatus(supabase, requestId, "processing", 40);
 
-    // Create follow-up job for campaigns
-    await createFollowUpJob({
-      accountId,
-      timeframe,
-      action: "get24HourData",
-      requestId,
-      phase: "campaigns",
-      offset: 0,
-    });
+  await createFollowUpJob({
+    accountId,
+    timeframe,
+    action: "get24HourData",
+    requestId,
+    phase: "campaigns",
+    offset: 0,
+  });
 
-    console.log("Campaigns phase job created");
-  } else {
-    console.log("Time limit reached, creating follow-up job for campaigns");
-    await createFollowUpJob({
-      accountId,
-      timeframe,
-      action: "get24HourData",
-      requestId,
-      phase: "campaigns",
-      offset: 0,
-    });
-  }
+  console.log("Campaigns phase job created");
 
   return {
     accountData,
     phase: "account",
     nextPhase: "campaigns",
+    remainingTime: getRemainingTime(startTime),
   };
 }
 
@@ -674,8 +709,23 @@ async function processCampaignsPhase(
   startTime: number
 ) {
   console.log(`Processing campaigns phase, offset: ${offset}`);
+  console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
   const account = new AdAccount(accountId);
+
+  // Check time before starting
+  if (shouldCreateFollowUpJob(startTime)) {
+    console.log("Time limit approaching, creating follow-up job immediately");
+    await createFollowUpJob({
+      accountId,
+      timeframe,
+      action: "get24HourData",
+      requestId,
+      phase: "campaigns",
+      offset: offset,
+    });
+    return { phase: "campaigns", status: "deferred_due_to_time_limit", offset };
+  }
 
   // Get campaigns with pagination
   const campaigns = await withRateLimitRetry(
@@ -719,15 +769,16 @@ async function processCampaignsPhase(
 
   console.log(`Retrieved ${campaigns.length} campaigns`);
 
-  // Process campaigns with time limit check
+  // Process campaigns with aggressive time checking
   const processedCampaigns = [];
   const campaignIds = [];
 
   for (let i = 0; i < campaigns.length; i++) {
-    // Check time limit
-    const elapsedTime = Date.now() - startTime;
-    if (elapsedTime > RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME) {
-      console.log("Time limit reached, creating follow-up job");
+    // Check time limit more frequently
+    if (shouldCreateFollowUpJob(startTime)) {
+      console.log(
+        `Time limit reached after processing ${i} campaigns, creating follow-up job`
+      );
       await createFollowUpJob({
         accountId,
         timeframe,
@@ -740,16 +791,31 @@ async function processCampaignsPhase(
     }
 
     const campaign = campaigns[i];
-    const progress = 40 + Math.floor((i / campaigns.length) * 20); // 40% to 60%
+    const progress =
+      40 +
+      Math.floor(((offset + i) / Math.max(1, campaigns.length + offset)) * 20); // 40% to 60%
     await updateJobStatus(supabase, requestId, "processing", progress);
 
+    console.log(
+      `Processing campaign ${i + 1}/${
+        campaigns.length
+      }, remaining time: ${getRemainingTime(startTime)}ms`
+    );
+
     try {
-      const campaignInsights = await getInsights(
-        campaign as InsightCapableEntity,
-        supabase,
-        accountId,
-        timeframe
-      );
+      // Skip insights for campaigns if we're running low on time
+      let campaignInsights = null;
+      if (getRemainingTime(startTime) > 20000) {
+        // Only get insights if we have more than 20 seconds
+        campaignInsights = await getInsights(
+          campaign as InsightCapableEntity,
+          supabase,
+          accountId,
+          timeframe
+        );
+      } else {
+        console.log("Skipping insights due to time constraints");
+      }
 
       const campaignData = {
         campaign_id: campaign.id,
@@ -808,7 +874,7 @@ async function processCampaignsPhase(
         campaignIds.push(campaign.id);
       }
 
-      // Add delay between campaigns to prevent rate limiting
+      // Reduced delay to process faster
       await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
     } catch (error) {
       console.error(`Error processing campaign ${campaign.id}:`, error);
@@ -818,16 +884,22 @@ async function processCampaignsPhase(
 
   console.log(`Processed ${processedCampaigns.length} campaigns`);
 
+  // Determine next action based on what we processed
+  const totalProcessed = offset + processedCampaigns.length;
+
   // If we processed all campaigns in this batch and there might be more
-  if (campaigns.length === RATE_LIMIT_CONFIG.BATCH_SIZE) {
-    // Create follow-up job for next batch of campaigns
+  if (
+    campaigns.length === RATE_LIMIT_CONFIG.BATCH_SIZE &&
+    processedCampaigns.length === campaigns.length
+  ) {
+    console.log("Creating follow-up job for next batch of campaigns");
     await createFollowUpJob({
       accountId,
       timeframe,
       action: "get24HourData",
       requestId,
       phase: "campaigns",
-      offset: offset + campaigns.length,
+      offset: totalProcessed,
     });
   } else {
     // All campaigns processed, move to adsets phase
@@ -849,11 +921,12 @@ async function processCampaignsPhase(
     processedCampaigns: processedCampaigns.length,
     campaignIds,
     phase: "campaigns",
-    offset: offset + campaigns.length,
+    offset: totalProcessed,
+    remainingTime: getRemainingTime(startTime),
   };
 }
 
-// Process adsets phase (placeholder - implement similar chunking logic)
+// Process adsets phase (implement similar chunking logic)
 async function processAdsetsPhase(
   accountId: string,
   supabase: any,
@@ -863,30 +936,228 @@ async function processAdsetsPhase(
   offset: number,
   startTime: number
 ) {
-  console.log(`Processing adsets phase for campaigns: ${campaignIds.length}`);
+  console.log(
+    `Processing adsets phase for campaigns: ${campaignIds.length}, offset: ${offset}`
+  );
+  console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
+
+  // Check time before starting
+  if (shouldCreateFollowUpJob(startTime)) {
+    console.log("Time limit approaching, creating follow-up job immediately");
+    await createFollowUpJob({
+      accountId,
+      timeframe,
+      action: "get24HourData",
+      requestId,
+      phase: "adsets",
+      campaignIds,
+      offset: offset,
+    });
+    return { phase: "adsets", status: "deferred_due_to_time_limit", offset };
+  }
 
   // Update progress
   await updateJobStatus(supabase, requestId, "processing", 70);
 
-  // TODO: Implement adsets processing with chunking similar to campaigns
-  // For now, move to ads phase
-  await createFollowUpJob({
-    accountId,
-    timeframe,
-    action: "get24HourData",
-    requestId,
-    phase: "ads",
-    adsetIds: [], // Will be populated when adsets are processed
-    offset: 0,
-  });
+  const account = new AdAccount(accountId);
+  const processedAdsets = [];
+  const adsetIds = [];
+
+  // Process campaigns in small batches to get their adsets
+  const campaignsToProcess = campaignIds.slice(
+    offset,
+    offset + RATE_LIMIT_CONFIG.BATCH_SIZE
+  );
+
+  for (let i = 0; i < campaignsToProcess.length; i++) {
+    // Check time limit frequently
+    if (shouldCreateFollowUpJob(startTime)) {
+      console.log(
+        `Time limit reached after processing ${i} campaigns for adsets`
+      );
+      await createFollowUpJob({
+        accountId,
+        timeframe,
+        action: "get24HourData",
+        requestId,
+        phase: "adsets",
+        campaignIds,
+        offset: offset + i,
+      });
+      break;
+    }
+
+    const campaignId = campaignsToProcess[i];
+    console.log(
+      `Getting adsets for campaign ${campaignId}, remaining time: ${getRemainingTime(
+        startTime
+      )}ms`
+    );
+
+    try {
+      // Get adsets for this campaign
+      const adsets = await withRateLimitRetry(
+        async () => {
+          const campaign =
+            new (require("facebook-nodejs-business-sdk").Campaign)(campaignId);
+          return campaign.getAdSets(
+            [
+              "name",
+              "status",
+              "configured_status",
+              "effective_status",
+              "optimization_goal",
+              "billing_event",
+              "bid_amount",
+              "budget_remaining",
+              "daily_budget",
+              "lifetime_budget",
+              "targeting",
+              "start_time",
+              "end_time",
+              "created_time",
+              "updated_time",
+            ],
+            { limit: 50 }
+          );
+        },
+        {
+          accountId,
+          endpoint: "adsets",
+          callType: "READ",
+          points: RATE_LIMIT_CONFIG.POINTS.READ,
+          supabase,
+        }
+      );
+
+      console.log(
+        `Retrieved ${adsets.length} adsets for campaign ${campaignId}`
+      );
+
+      // Process each adset
+      for (const adset of adsets) {
+        // Check time for each adset
+        if (shouldCreateFollowUpJob(startTime)) {
+          console.log("Time limit reached during adset processing");
+          break;
+        }
+
+        try {
+          // Skip insights if running low on time
+          let adsetInsights = null;
+          if (getRemainingTime(startTime) > 15000) {
+            // Only get insights if we have more than 15 seconds
+            adsetInsights = await getInsights(
+              adset as InsightCapableEntity,
+              supabase,
+              accountId,
+              timeframe
+            );
+          } else {
+            console.log("Skipping adset insights due to time constraints");
+          }
+
+          const adsetData = {
+            adset_id: adset.id,
+            campaign_id: campaignId,
+            account_id: accountId,
+            name: adset.name,
+            status: adset.status,
+            configured_status: adset.configured_status,
+            effective_status: adset.effective_status,
+            optimization_goal: adset.optimization_goal,
+            billing_event: adset.billing_event,
+            bid_amount: parseFloat(adset.bid_amount) || 0,
+            budget_remaining: parseFloat(adset.budget_remaining) || 0,
+            daily_budget: parseFloat(adset.daily_budget) || 0,
+            lifetime_budget: parseFloat(adset.lifetime_budget) || 0,
+            targeting: adset.targeting || {},
+            start_time: adset.start_time ? new Date(adset.start_time) : null,
+            end_time: adset.end_time ? new Date(adset.end_time) : null,
+            created_time: adset.created_time
+              ? new Date(adset.created_time)
+              : null,
+            updated_time: adset.updated_time
+              ? new Date(adset.updated_time)
+              : null,
+            impressions: safeParseInt(adsetInsights?.impressions),
+            clicks: safeParseInt(adsetInsights?.clicks),
+            reach: safeParseInt(adsetInsights?.reach),
+            spend: safeParseFloat(adsetInsights?.spend),
+            last_updated: new Date(),
+            created_at: new Date(),
+            updated_at: new Date(),
+          };
+
+          const { error: adsetError } = await supabase
+            .from("meta_ad_sets")
+            .upsert([adsetData], {
+              onConflict: "adset_id",
+              ignoreDuplicates: false,
+            });
+
+          if (!adsetError) {
+            processedAdsets.push(adsetData);
+            adsetIds.push(adset.id);
+          }
+
+          await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
+        } catch (error) {
+          console.error(`Error processing adset ${adset.id}:`, error);
+          continue;
+        }
+      }
+
+      await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
+    } catch (error) {
+      console.error(`Error getting adsets for campaign ${campaignId}:`, error);
+      continue;
+    }
+  }
+
+  console.log(`Processed ${processedAdsets.length} adsets`);
+
+  // Determine next action
+  const totalProcessed = offset + campaignsToProcess.length;
+
+  if (totalProcessed < campaignIds.length) {
+    // More campaigns to process for adsets
+    console.log("Creating follow-up job for next batch of campaigns (adsets)");
+    await createFollowUpJob({
+      accountId,
+      timeframe,
+      action: "get24HourData",
+      requestId,
+      phase: "adsets",
+      campaignIds,
+      offset: totalProcessed,
+    });
+  } else {
+    // All adsets processed, move to ads phase
+    console.log("All adsets processed, starting ads phase");
+    await updateJobStatus(supabase, requestId, "processing", 80);
+
+    await createFollowUpJob({
+      accountId,
+      timeframe,
+      action: "get24HourData",
+      requestId,
+      phase: "ads",
+      adsetIds: adsetIds,
+      offset: 0,
+    });
+  }
 
   return {
+    processedAdsets: processedAdsets.length,
+    adsetIds,
     phase: "adsets",
-    message: "Adsets processing placeholder - moving to ads phase",
+    offset: totalProcessed,
+    remainingTime: getRemainingTime(startTime),
   };
 }
 
-// Process ads phase (placeholder - implement similar chunking logic)
+// Process ads phase (implement similar chunking logic)
 async function processAdsPhase(
   accountId: string,
   supabase: any,
@@ -896,21 +1167,202 @@ async function processAdsPhase(
   offset: number,
   startTime: number
 ) {
-  console.log(`Processing ads phase for adsets: ${adsetIds.length}`);
+  console.log(
+    `Processing ads phase for adsets: ${adsetIds.length}, offset: ${offset}`
+  );
+  console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
+
+  // Check time before starting
+  if (shouldCreateFollowUpJob(startTime)) {
+    console.log("Time limit approaching, creating follow-up job immediately");
+    await createFollowUpJob({
+      accountId,
+      timeframe,
+      action: "get24HourData",
+      requestId,
+      phase: "ads",
+      adsetIds,
+      offset: offset,
+    });
+    return { phase: "ads", status: "deferred_due_to_time_limit", offset };
+  }
 
   // Update progress
   await updateJobStatus(supabase, requestId, "processing", 90);
 
-  // TODO: Implement ads processing with chunking
-  // For now, mark as completed
-  await updateJobStatus(supabase, requestId, "completed", 100, undefined, {
-    message: "All phases completed",
-    totalPhases: 4,
-  });
+  const processedAds = [];
+
+  // Process adsets in small batches to get their ads
+  const adsetsToProcess = adsetIds.slice(
+    offset,
+    offset + RATE_LIMIT_CONFIG.BATCH_SIZE
+  );
+
+  for (let i = 0; i < adsetsToProcess.length; i++) {
+    // Check time limit frequently
+    if (shouldCreateFollowUpJob(startTime)) {
+      console.log(`Time limit reached after processing ${i} adsets for ads`);
+      await createFollowUpJob({
+        accountId,
+        timeframe,
+        action: "get24HourData",
+        requestId,
+        phase: "ads",
+        adsetIds,
+        offset: offset + i,
+      });
+      break;
+    }
+
+    const adsetId = adsetsToProcess[i];
+    console.log(
+      `Getting ads for adset ${adsetId}, remaining time: ${getRemainingTime(
+        startTime
+      )}ms`
+    );
+
+    try {
+      // Get ads for this adset
+      const ads = await withRateLimitRetry(
+        async () => {
+          const adset = new (require("facebook-nodejs-business-sdk").AdSet)(
+            adsetId
+          );
+          return adset.getAds(
+            [
+              "name",
+              "status",
+              "configured_status",
+              "effective_status",
+              "creative",
+              "tracking_specs",
+              "conversion_specs",
+              "bid_amount",
+              "created_time",
+              "updated_time",
+            ],
+            { limit: 50 }
+          );
+        },
+        {
+          accountId,
+          endpoint: "ads",
+          callType: "READ",
+          points: RATE_LIMIT_CONFIG.POINTS.READ,
+          supabase,
+        }
+      );
+
+      console.log(`Retrieved ${ads.length} ads for adset ${adsetId}`);
+
+      // Process each ad
+      for (const ad of ads) {
+        // Check time for each ad
+        if (shouldCreateFollowUpJob(startTime)) {
+          console.log("Time limit reached during ad processing");
+          break;
+        }
+
+        try {
+          // Skip insights if running low on time
+          let adInsights = null;
+          if (getRemainingTime(startTime) > 10000) {
+            // Only get insights if we have more than 10 seconds
+            adInsights = await getInsights(
+              ad as InsightCapableEntity,
+              supabase,
+              accountId,
+              timeframe
+            );
+          } else {
+            console.log("Skipping ad insights due to time constraints");
+          }
+
+          const adData = {
+            ad_id: ad.id,
+            adset_id: adsetId,
+            account_id: accountId,
+            name: ad.name,
+            status: ad.status,
+            configured_status: ad.configured_status,
+            effective_status: ad.effective_status,
+            creative: ad.creative || {},
+            tracking_specs: ad.tracking_specs || [],
+            conversion_specs: ad.conversion_specs || [],
+            bid_amount: parseFloat(ad.bid_amount) || 0,
+            created_time: ad.created_time ? new Date(ad.created_time) : null,
+            updated_time: ad.updated_time ? new Date(ad.updated_time) : null,
+            impressions: safeParseInt(adInsights?.impressions),
+            clicks: safeParseInt(adInsights?.clicks),
+            reach: safeParseInt(adInsights?.reach),
+            spend: safeParseFloat(adInsights?.spend),
+            last_updated: new Date(),
+            created_at: new Date(),
+            updated_at: new Date(),
+          };
+
+          const { error: adError } = await supabase
+            .from("meta_ads")
+            .upsert([adData], {
+              onConflict: "ad_id",
+              ignoreDuplicates: false,
+            });
+
+          if (!adError) {
+            processedAds.push(adData);
+          }
+
+          await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
+        } catch (error) {
+          console.error(`Error processing ad ${ad.id}:`, error);
+          continue;
+        }
+      }
+
+      await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
+    } catch (error) {
+      console.error(`Error getting ads for adset ${adsetId}:`, error);
+      continue;
+    }
+  }
+
+  console.log(`Processed ${processedAds.length} ads`);
+
+  // Determine next action
+  const totalProcessed = offset + adsetsToProcess.length;
+
+  if (totalProcessed < adsetIds.length) {
+    // More adsets to process for ads
+    console.log("Creating follow-up job for next batch of adsets (ads)");
+    await createFollowUpJob({
+      accountId,
+      timeframe,
+      action: "get24HourData",
+      requestId,
+      phase: "ads",
+      adsetIds,
+      offset: totalProcessed,
+    });
+  } else {
+    // All ads processed, mark as completed
+    console.log("All ads processed, marking job as completed");
+    await updateJobStatus(supabase, requestId, "completed", 100, undefined, {
+      message: "All phases completed successfully",
+      totalPhases: 4,
+      processedAds: processedAds.length,
+      summary: {
+        totalProcessed: processedAds.length,
+        completedAt: new Date().toISOString(),
+      },
+    });
+  }
 
   return {
+    processedAds: processedAds.length,
     phase: "ads",
-    message: "All processing phases completed",
+    offset: totalProcessed,
+    remainingTime: getRemainingTime(startTime),
+    completed: totalProcessed >= adsetIds.length,
   };
 }
 

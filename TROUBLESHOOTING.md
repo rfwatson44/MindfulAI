@@ -52,20 +52,26 @@ META_ACCESS_TOKEN=your_meta_access_token
 
 ## Issue: Jobs Timing Out After 90 Seconds
 
-**New in v2.0:** The system now uses chunked processing to prevent timeouts.
+**New in v2.1:** The system now uses aggressive chunked processing to prevent timeouts.
 
-### How Chunked Processing Works
+### How Aggressive Chunked Processing Works
 
-The job is broken down into phases:
+The job is broken down into phases with strict time management:
 
 1. **Account Phase** (10-40%): Process account info and insights
-2. **Campaigns Phase** (40-60%): Process campaigns in batches of 10
-3. **Adsets Phase** (60-80%): Process ad sets in batches
-4. **Ads Phase** (80-100%): Process individual ads in batches
+2. **Campaigns Phase** (40-60%): Process campaigns in batches of 5
+3. **Adsets Phase** (60-80%): Process ad sets in batches of 5 campaigns
+4. **Ads Phase** (80-100%): Process individual ads in batches of 5 adsets
 
-Each phase runs for a maximum of 75 seconds, then creates a follow-up job for the next phase or batch.
+**Key Improvements:**
 
-### Debugging Chunked Processing
+- **60-second time limit** per phase (with 10-second safety buffer)
+- **Batch size reduced to 5** items for faster processing
+- **Aggressive time checking** before each operation
+- **Skip insights** when running low on time to prioritize data structure
+- **Immediate follow-up jobs** when approaching time limits
+
+### Debugging Aggressive Chunked Processing
 
 **Check Job Progress:**
 
@@ -75,18 +81,19 @@ WHERE request_id = 'your-request-id'
 ORDER BY updated_at DESC;
 ```
 
-**Look for Phase Transitions in Logs:**
+**Look for Time Management in Logs:**
 
-- "Processing account phase..."
-- "Starting campaigns phase in same job..."
-- "Creating follow-up job for campaigns"
-- "Processing campaigns phase, offset: X"
+- "Remaining time: XXXXms"
+- "Time limit approaching, creating follow-up job immediately"
+- "Skipping insights due to time constraints"
+- "Time limit reached after processing X items"
 
-**Common Issues:**
+**Expected Behavior:**
 
-- **Stuck at 40%**: Account phase completed but campaigns phase didn't start
-- **Progress jumping**: Multiple jobs running for same request_id
-- **Stuck at specific percentage**: One phase failed to create follow-up job
+- **More frequent follow-up jobs** (every 60 seconds max)
+- **Faster progress updates** with smaller batches
+- **Data prioritization**: Structure first, insights second
+- **No 90-second timeouts**
 
 ### 3. Check QStash Console
 
