@@ -847,6 +847,7 @@ async function processCampaignsPhase(
   // Process campaigns with aggressive time checking
   const processedCampaigns = [];
   const campaignIds = [];
+  let totalErrors = 0;
 
   for (let i = 0; i < campaigns.length; i++) {
     // Check time limit more frequently
@@ -950,8 +951,10 @@ async function processCampaignsPhase(
 
       // Reduced delay to process faster
       await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
-    } catch (error) {
-      console.error(`Error processing campaign ${campaign.id}:`, error);
+    } catch (error: any) {
+      console.error(`❌ Error processing campaign ${campaign.id}:`, error);
+      console.error(`❌ Error stack:`, error.stack);
+      totalErrors++;
       continue;
     }
   }
@@ -1013,6 +1016,16 @@ async function processAdsetsPhase(
   after: string,
   startTime: number
 ) {
+  console.log("=== ADSETS PHASE DEBUG START ===");
+  console.log(`Account ID: ${accountId}`);
+  console.log(`Request ID: ${requestId}`);
+  console.log(`Campaign IDs received: ${JSON.stringify(campaignIds)}`);
+  console.log(`Campaign IDs count: ${campaignIds.length}`);
+  console.log(`After cursor: ${after || "none"}`);
+  console.log(`Timeframe: ${timeframe}`);
+  console.log(`Start time: ${new Date(startTime).toISOString()}`);
+  console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
+
   // Check for cancellation at the start
   if (await checkJobCancellation(supabase, requestId)) {
     console.log("Job cancelled, stopping adsets phase");
@@ -1020,11 +1033,14 @@ async function processAdsetsPhase(
   }
 
   // Ensure account exists in meta_account_insights before processing adsets
+  console.log("=== CHECKING ACCOUNT EXISTS ===");
   const { data: accountExists, error: accountCheckError } = await supabase
     .from("meta_account_insights")
     .select("account_id")
     .eq("account_id", accountId)
     .single();
+
+  console.log("Account check result:", { accountExists, accountCheckError });
 
   if (accountCheckError || !accountExists) {
     console.error(
@@ -1036,27 +1052,44 @@ async function processAdsetsPhase(
     );
   }
 
-  console.log("Processing adsets phase...");
+  console.log("✅ Account exists in meta_account_insights");
+
+  // Validate campaign IDs
+  if (!campaignIds || campaignIds.length === 0) {
+    console.error("❌ No campaign IDs provided to adsets phase");
+    throw new Error("No campaign IDs provided to process adsets");
+  }
+
+  console.log("=== PROCESSING ADSETS PHASE ===");
   console.log(`Campaign IDs to process: ${campaignIds.length}`);
-  console.log(`After cursor: ${after || "none"}`);
-  console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
+  console.log(`Campaign IDs: ${campaignIds.join(", ")}`);
 
   // Process campaigns in batches
   const batchSize = Math.min(RATE_LIMIT_CONFIG.BATCH_SIZE, campaignIds.length);
   const currentBatch = campaignIds.slice(0, batchSize);
   const remainingCampaigns = campaignIds.slice(batchSize);
 
-  console.log(`Processing batch of ${currentBatch.length} campaigns`);
+  console.log(`=== BATCH PROCESSING ===`);
+  console.log(`Batch size: ${batchSize}`);
+  console.log(`Current batch: ${currentBatch.length} campaigns`);
+  console.log(`Current batch IDs: ${currentBatch.join(", ")}`);
   console.log(`Remaining campaigns: ${remainingCampaigns.length}`);
 
   const processedAdsets = [];
   const adsetIds = [];
+  let totalAdsetsFound = 0;
+  let totalAdsetsStored = 0;
+  let totalErrors = 0;
 
   for (let i = 0; i < currentBatch.length; i++) {
+    console.log(
+      `\n=== PROCESSING CAMPAIGN ${i + 1}/${currentBatch.length} ===`
+    );
+
     // Check time limit more frequently
     if (shouldCreateFollowUpJob(startTime)) {
       console.log(
-        `Time limit reached after processing ${i} campaigns, creating follow-up job`
+        `⏰ Time limit reached after processing ${i} campaigns, creating follow-up job`
       );
       await createFollowUpJob({
         accountId,
@@ -1073,21 +1106,26 @@ async function processAdsetsPhase(
     const campaignId = currentBatch[i];
     const progress =
       60 + Math.floor(((i + 1) / Math.max(1, currentBatch.length)) * 20); // 60% to 80%
+
+    console.log(`Campaign ID: ${campaignId}`);
+    console.log(`Progress: ${progress}%`);
+    console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
+
     await updateJobStatus(supabase, requestId, "processing", progress);
 
-    console.log(
-      `Processing campaign ${i + 1}/${
-        currentBatch.length
-      } (${campaignId}), remaining time: ${getRemainingTime(startTime)}ms`
-    );
-
     try {
+      console.log(`🔍 Creating Campaign object for ID: ${campaignId}`);
       const campaign = new Campaign(campaignId);
+
+      console.log(`📡 Fetching adsets for campaign ${campaignId}...`);
 
       // Get adsets for this campaign
       const adsetsResponse = await withRateLimitRetry(
         async () => {
-          return campaign.getAdSets(
+          console.log(
+            `Making API call to get adsets for campaign ${campaignId}`
+          );
+          const result = campaign.getAdSets(
             [
               "name",
               "status",
@@ -1104,6 +1142,8 @@ async function processAdsetsPhase(
             ],
             { limit: 50 }
           );
+          console.log(`API call completed for campaign ${campaignId}`);
+          return result;
         },
         {
           accountId,
@@ -1114,27 +1154,45 @@ async function processAdsetsPhase(
         }
       );
 
+      console.log(`📊 Raw adsets response type: ${typeof adsetsResponse}`);
+      console.log(`📊 Raw adsets response:`, adsetsResponse);
+
       const adsets = Array.isArray(adsetsResponse)
         ? adsetsResponse
         : (adsetsResponse as any).data || [];
 
-      console.log(`Found ${adsets.length} adsets for campaign ${campaignId}`);
+      console.log(
+        `✅ Found ${adsets.length} adsets for campaign ${campaignId}`
+      );
+      totalAdsetsFound += adsets.length;
+
+      if (adsets.length === 0) {
+        console.log(`⚠️ No adsets found for campaign ${campaignId}`);
+        continue;
+      }
 
       // Process each adset
-      for (const adset of adsets) {
+      for (let j = 0; j < adsets.length; j++) {
+        const adset = adsets[j];
+        console.log(`\n--- Processing adset ${j + 1}/${adsets.length} ---`);
+        console.log(`Adset ID: ${adset.id}`);
+        console.log(`Adset name: ${adset.name}`);
+        console.log(`Adset status: ${adset.status}`);
+
         try {
           // Get insights for this adset if we have time
           let adsetInsights = null;
           if (getRemainingTime(startTime) > 15000) {
-            // Only get insights if we have more than 15 seconds
+            console.log(`🔍 Getting insights for adset ${adset.id}...`);
             adsetInsights = await getInsights(
               adset as InsightCapableEntity,
               supabase,
               accountId,
               timeframe
             );
+            console.log(`📊 Adset insights:`, adsetInsights);
           } else {
-            console.log("Skipping adset insights due to time constraints");
+            console.log("⏰ Skipping adset insights due to time constraints");
           }
 
           // Create simplified adset data structure
@@ -1186,56 +1244,83 @@ async function processAdsetsPhase(
             updated_at: new Date().toISOString(),
           };
 
-          console.log(`Attempting to store adset ${adset.id} with data:`, {
+          console.log(`💾 Attempting to store adset ${adset.id}`);
+          console.log(`📋 Adset data structure:`, {
             ad_set_id: adsetData.ad_set_id,
             campaign_id: adsetData.campaign_id,
+            account_id: adsetData.account_id,
             name: adsetData.name,
             status: adsetData.status,
+            targeting: typeof adsetData.targeting,
+            start_time: adsetData.start_time,
+            end_time: adsetData.end_time,
           });
 
-          const { error: adsetError } = await supabase
+          console.log(`🗄️ Making upsert call to meta_ad_sets table...`);
+          const { data: upsertData, error: adsetError } = await supabase
             .from("meta_ad_sets")
             .upsert([adsetData], {
               onConflict: "ad_set_id",
               ignoreDuplicates: false,
-            });
+            })
+            .select(); // Add select to see what was actually inserted
+
+          console.log(`📤 Upsert response:`, { upsertData, adsetError });
 
           if (adsetError) {
-            console.error(`Error storing adset ${adset.id}:`, adsetError);
+            console.error(`❌ Error storing adset ${adset.id}:`, adsetError);
+            console.error(`❌ Error code:`, adsetError.code);
+            console.error(`❌ Error message:`, adsetError.message);
+            console.error(`❌ Error details:`, adsetError.details);
+            console.error(`❌ Error hint:`, adsetError.hint);
             console.error(
-              `Adset data that failed:`,
+              `❌ Adset data that failed:`,
               JSON.stringify(adsetData, null, 2)
             );
+            totalErrors++;
             // Continue processing other adsets even if one fails
           } else {
+            console.log(`✅ Successfully stored adset ${adset.id}`);
+            console.log(`✅ Upserted data:`, upsertData);
             processedAdsets.push(adsetData);
             adsetIds.push(adset.id);
-            console.log(`Successfully stored adset ${adset.id}`);
+            totalAdsetsStored++;
           }
 
           // Small delay between adsets
           await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
-        } catch (error) {
-          console.error(`Error processing adset ${adset.id}:`, error);
+        } catch (error: any) {
+          console.error(`❌ Error processing adset ${adset.id}:`, error);
+          console.error(`❌ Error stack:`, error.stack);
+          totalErrors++;
           continue;
         }
       }
 
       // Delay between campaigns
       await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
-    } catch (error) {
-      console.error(`Error processing campaign ${campaignId}:`, error);
+    } catch (error: any) {
+      console.error(`❌ Error processing campaign ${campaignId}:`, error);
+      console.error(`❌ Error stack:`, error.stack);
+      totalErrors++;
       continue;
     }
   }
 
-  console.log(`Processed ${processedAdsets.length} adsets`);
+  console.log(`\n=== ADSETS PHASE SUMMARY ===`);
+  console.log(`Total adsets found: ${totalAdsetsFound}`);
+  console.log(`Total adsets stored: ${totalAdsetsStored}`);
+  console.log(`Total errors: ${totalErrors}`);
+  console.log(`Processed adsets: ${processedAdsets.length}`);
+  console.log(`Adset IDs collected: ${adsetIds.length}`);
+  console.log(`Adset IDs: ${adsetIds.join(", ")}`);
 
   // Determine next action
   if (remainingCampaigns.length > 0) {
     // More campaigns to process
-    console.log("Creating follow-up job for remaining campaigns");
+    console.log("🔄 Creating follow-up job for remaining campaigns");
     console.log(`Remaining campaigns: ${remainingCampaigns.length}`);
+    console.log(`Remaining campaign IDs: ${remainingCampaigns.join(", ")}`);
     await createFollowUpJob({
       accountId,
       timeframe,
@@ -1247,7 +1332,7 @@ async function processAdsetsPhase(
     });
   } else {
     // All campaigns processed, move to ads phase
-    console.log("All campaigns processed, starting ads phase");
+    console.log("✅ All campaigns processed, starting ads phase");
     console.log(`Total adset IDs collected: ${adsetIds.length}`);
     console.log(
       `Adset IDs: ${adsetIds.slice(0, 5).join(", ")}${
@@ -1266,12 +1351,14 @@ async function processAdsetsPhase(
         adsetIds: adsetIds,
         after: "",
       });
-      console.log("Ads phase job created successfully");
+      console.log("🚀 Ads phase job created successfully");
     } else {
-      console.log("No adsets found, completing job");
+      console.log("⚠️ No adsets found, completing job");
       await updateJobStatus(supabase, requestId, "completed", 100);
     }
   }
+
+  console.log("=== ADSETS PHASE DEBUG END ===\n");
 
   return {
     processedAdsets: processedAdsets.length,
@@ -1279,6 +1366,13 @@ async function processAdsetsPhase(
     phase: "adsets",
     remainingCampaigns: remainingCampaigns.length,
     remainingTime: getRemainingTime(startTime),
+    summary: {
+      totalAdsetsFound,
+      totalAdsetsStored,
+      totalErrors,
+      campaignsProcessed: currentBatch.length,
+      campaignsRemaining: remainingCampaigns.length,
+    },
   };
 }
 
@@ -1322,6 +1416,7 @@ async function processAdsPhase(
   await updateJobStatus(supabase, requestId, "processing", 90);
 
   const processedAds = [];
+  let totalErrors = 0;
 
   // Process adsets in small batches to get their ads
   const adsetsToProcess = adsetIds.slice(0, RATE_LIMIT_CONFIG.BATCH_SIZE);
@@ -1484,8 +1579,10 @@ async function processAdsPhase(
           }
 
           await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
-        } catch (error) {
-          console.error(`Error processing ad ${ad.id}:`, error);
+        } catch (error: any) {
+          console.error(`❌ Error processing ad ${ad.id}:`, error);
+          console.error(`❌ Error stack:`, error.stack);
+          totalErrors++;
           continue;
         }
       }
