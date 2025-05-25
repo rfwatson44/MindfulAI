@@ -400,10 +400,18 @@ async function handler(request: Request) {
     let result;
 
     console.log(`Processing phase: ${phase} for account: ${accountId}`);
+    console.log(`Payload details:`, {
+      phase,
+      action,
+      campaignIds: payload.campaignIds?.length || 0,
+      adsetIds: payload.adsetIds?.length || 0,
+      after: payload.after || "none",
+    });
 
     // Process based on phase for chunked execution
     switch (phase) {
       case "account":
+        console.log("=== EXECUTING ACCOUNT PHASE ===");
         await updateJobStatus(supabase, payload.requestId, "processing", 10);
         result = await processAccountPhase(
           accountId,
@@ -415,6 +423,7 @@ async function handler(request: Request) {
         break;
 
       case "campaigns":
+        console.log("=== EXECUTING CAMPAIGNS PHASE ===");
         result = await processCampaignsPhase(
           accountId,
           supabase,
@@ -426,6 +435,7 @@ async function handler(request: Request) {
         break;
 
       case "adsets":
+        console.log("=== EXECUTING ADSETS PHASE ===");
         result = await processAdsetsPhase(
           accountId,
           supabase,
@@ -438,6 +448,7 @@ async function handler(request: Request) {
         break;
 
       case "ads":
+        console.log("=== EXECUTING ADS PHASE ===");
         result = await processAdsPhase(
           accountId,
           supabase,
@@ -452,6 +463,7 @@ async function handler(request: Request) {
       default:
         // Legacy support for non-chunked jobs
         if (action === "get24HourData" || action === "getData") {
+          console.log("=== EXECUTING LEGACY ACCOUNT PHASE ===");
           await updateJobStatus(supabase, payload.requestId, "processing", 10);
           result = await processAccountPhase(
             accountId,
@@ -904,6 +916,7 @@ async function processCampaignsPhase(
   if (nextCursor && campaigns.length === RATE_LIMIT_CONFIG.BATCH_SIZE) {
     // More campaigns to fetch
     console.log("Creating follow-up job for next batch of campaigns");
+    console.log(`Next cursor: ${nextCursor}`);
     await createFollowUpJob({
       accountId,
       timeframe,
@@ -915,6 +928,12 @@ async function processCampaignsPhase(
   } else {
     // All campaigns processed, move to adsets phase
     console.log("All campaigns processed, starting adsets phase");
+    console.log(`Total campaign IDs collected: ${campaignIds.length}`);
+    console.log(
+      `Campaign IDs: ${campaignIds.slice(0, 5).join(", ")}${
+        campaignIds.length > 5 ? "..." : ""
+      }`
+    );
     await updateJobStatus(supabase, requestId, "processing", 60);
 
     await createFollowUpJob({
@@ -926,6 +945,7 @@ async function processCampaignsPhase(
       campaignIds: campaignIds,
       after: "",
     });
+    console.log("Adsets phase job created successfully");
   }
 
   return {
@@ -947,8 +967,14 @@ async function processAdsetsPhase(
   after: string,
   startTime: number
 ) {
+  console.log("=== ADSETS PHASE STARTED ===");
   console.log(
     `Processing adsets phase for campaigns: ${campaignIds.length}, after: ${after}`
+  );
+  console.log(
+    `Campaign IDs received: ${campaignIds.slice(0, 5).join(", ")}${
+      campaignIds.length > 5 ? "..." : ""
+    }`
   );
   console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
@@ -1066,7 +1092,7 @@ async function processAdsetsPhase(
           }
 
           const adsetData = {
-            adset_id: adset.id,
+            ad_set_id: adset.id,
             campaign_id: campaignId,
             account_id: accountId,
             name: adset.name,
@@ -1092,6 +1118,21 @@ async function processAdsetsPhase(
             clicks: safeParseInt(adsetInsights?.clicks),
             reach: safeParseInt(adsetInsights?.reach),
             spend: safeParseFloat(adsetInsights?.spend),
+            conversions: adsetInsights?.actions
+              ? adsetInsights.actions.reduce((acc: any, action: any) => {
+                  acc[action.action_type] = action.value;
+                  return acc;
+                }, {})
+              : null,
+            cost_per_conversion:
+              adsetInsights?.actions && adsetInsights.actions.length > 0
+                ? safeParseFloat(adsetInsights.spend) /
+                  adsetInsights.actions.reduce(
+                    (sum: number, action: any) =>
+                      sum + safeParseInt(action.value),
+                    0
+                  )
+                : null,
             last_updated: new Date(),
             created_at: new Date(),
             updated_at: new Date(),
@@ -1100,7 +1141,7 @@ async function processAdsetsPhase(
           const { error: adsetError } = await supabase
             .from("meta_ad_sets")
             .upsert([adsetData], {
-              onConflict: "adset_id",
+              onConflict: "ad_set_id",
               ignoreDuplicates: false,
             });
 
@@ -1131,18 +1172,34 @@ async function processAdsetsPhase(
   if (totalProcessed < campaignIds.length) {
     // More campaigns to process for adsets
     console.log("Creating follow-up job for next batch of campaigns (adsets)");
+    console.log(
+      `Processed ${totalProcessed} of ${campaignIds.length} campaigns`
+    );
+
+    // Pass the remaining campaign IDs to the next job
+    const remainingCampaignIds = campaignIds.slice(
+      RATE_LIMIT_CONFIG.BATCH_SIZE
+    );
+    console.log(`Remaining campaigns: ${remainingCampaignIds.length}`);
+
     await createFollowUpJob({
       accountId,
       timeframe,
       action: "get24HourData",
       requestId,
       phase: "adsets",
-      campaignIds,
+      campaignIds: remainingCampaignIds, // Pass remaining campaigns, not all campaigns
       after: after,
     });
   } else {
     // All adsets processed, move to ads phase
     console.log("All adsets processed, starting ads phase");
+    console.log(`Total adset IDs collected: ${adsetIds.length}`);
+    console.log(
+      `Adset IDs: ${adsetIds.slice(0, 5).join(", ")}${
+        adsetIds.length > 5 ? "..." : ""
+      }`
+    );
     await updateJobStatus(supabase, requestId, "processing", 80);
 
     await createFollowUpJob({
@@ -1152,8 +1209,9 @@ async function processAdsetsPhase(
       requestId,
       phase: "ads",
       adsetIds: adsetIds,
-      after: after,
+      after: "",
     });
+    console.log("Ads phase job created successfully");
   }
 
   return {
@@ -1227,6 +1285,25 @@ async function processAdsPhase(
     );
 
     try {
+      // First get the adset to get the campaign_id
+      const adsetInfo = await withRateLimitRetry(
+        async () => {
+          const adset = new (require("facebook-nodejs-business-sdk").AdSet)(
+            adsetId
+          );
+          return adset.read(["campaign_id"]);
+        },
+        {
+          accountId,
+          endpoint: "adset_info",
+          callType: "READ",
+          points: RATE_LIMIT_CONFIG.POINTS.READ,
+          supabase,
+        }
+      );
+
+      const campaignId = adsetInfo.campaign_id;
+
       // Get ads for this adset
       const ads = await withRateLimitRetry(
         async () => {
@@ -1242,7 +1319,6 @@ async function processAdsPhase(
               "creative",
               "tracking_specs",
               "conversion_specs",
-              "bid_amount",
               "created_time",
               "updated_time",
             ],
@@ -1285,7 +1361,7 @@ async function processAdsPhase(
 
           const adData = {
             ad_id: ad.id,
-            adset_id: adsetId,
+            ad_set_id: adsetId,
             account_id: accountId,
             name: ad.name,
             status: ad.status,
@@ -1294,16 +1370,29 @@ async function processAdsPhase(
             creative: ad.creative || {},
             tracking_specs: ad.tracking_specs || [],
             conversion_specs: ad.conversion_specs || [],
-            bid_amount: parseFloat(ad.bid_amount) || 0,
-            created_time: ad.created_time ? new Date(ad.created_time) : null,
-            updated_time: ad.updated_time ? new Date(ad.updated_time) : null,
+            campaign_id: campaignId,
             impressions: safeParseInt(adInsights?.impressions),
             clicks: safeParseInt(adInsights?.clicks),
             reach: safeParseInt(adInsights?.reach),
             spend: safeParseFloat(adInsights?.spend),
-            last_updated: new Date(),
+            conversions: adInsights?.actions
+              ? adInsights.actions.reduce((acc: any, action: any) => {
+                  acc[action.action_type] = action.value;
+                  return acc;
+                }, {})
+              : null,
+            cost_per_conversion:
+              adInsights?.actions && adInsights.actions.length > 0
+                ? safeParseFloat(adInsights.spend) /
+                  adInsights.actions.reduce(
+                    (sum: number, action: any) =>
+                      sum + safeParseInt(action.value),
+                    0
+                  )
+                : null,
             created_at: new Date(),
             updated_at: new Date(),
+            last_updated: new Date(),
           };
 
           const { error: adError } = await supabase
@@ -1339,18 +1428,25 @@ async function processAdsPhase(
   if (totalProcessed < adsetIds.length) {
     // More adsets to process for ads
     console.log("Creating follow-up job for next batch of adsets (ads)");
+    console.log(`Processed ${totalProcessed} of ${adsetIds.length} adsets`);
+
+    // Pass the remaining adset IDs to the next job
+    const remainingAdsetIds = adsetIds.slice(RATE_LIMIT_CONFIG.BATCH_SIZE);
+    console.log(`Remaining adsets: ${remainingAdsetIds.length}`);
+
     await createFollowUpJob({
       accountId,
       timeframe,
       action: "get24HourData",
       requestId,
       phase: "ads",
-      adsetIds,
+      adsetIds: remainingAdsetIds, // Pass remaining adsets, not all adsets
       after: after,
     });
   } else {
     // All ads processed, mark as completed
     console.log("All ads processed, marking job as completed");
+    console.log(`Total ads processed: ${processedAds.length}`);
     await updateJobStatus(supabase, requestId, "completed", 100, undefined, {
       message: "All phases completed successfully",
       totalPhases: 4,
