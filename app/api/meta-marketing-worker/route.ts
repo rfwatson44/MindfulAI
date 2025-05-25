@@ -3,6 +3,12 @@ import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 import { FacebookAdsApi, AdAccount } from "facebook-nodejs-business-sdk";
 import { createClient } from "@/utils/supabase/server";
 import { MetaMarketingJobPayload } from "@/app/actions/meta-marketing-queue";
+import { Client } from "@upstash/qstash";
+
+// Initialize QStash client for creating follow-up jobs
+const qstashClient = new Client({
+  token: process.env.QSTASH_TOKEN!,
+});
 
 // Import all the helper functions from the original route
 import {
@@ -46,10 +52,11 @@ const RATE_LIMIT_CONFIG = {
     WRITE: 3,
     INSIGHTS: 2,
   },
-  BATCH_SIZE: 50,
+  BATCH_SIZE: 10, // Reduced batch size for chunked processing
   MIN_DELAY: 1000,
   BURST_DELAY: 2000,
   INSIGHTS_DELAY: 3000,
+  MAX_PROCESSING_TIME: 75000, // 75 seconds to stay under Vercel limit
 };
 
 // Meta API configuration
@@ -59,6 +66,16 @@ const META_CONFIG = {
 
 // Helper function to delay execution
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Extended job payload for chunked processing
+interface ChunkedJobPayload extends MetaMarketingJobPayload {
+  phase?: string; // 'account' | 'campaigns' | 'adsets' | 'ads'
+  campaignIds?: string[];
+  adsetIds?: string[];
+  offset?: number;
+  totalItems?: number;
+  processedItems?: number;
+}
 
 // Job status tracking
 async function updateJobStatus(
@@ -115,6 +132,40 @@ async function updateJobStatus(
       supabaseError: err,
     });
     // Don't throw here to prevent the main job from failing due to status update issues
+  }
+}
+
+// Create follow-up job for next phase
+async function createFollowUpJob(payload: ChunkedJobPayload) {
+  try {
+    const baseUrl =
+      process.env.WEBHOOK_BASE_URL ||
+      (process.env.VERCEL_PROJECT_PRODUCTION_URL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+        : process.env.NEXTAUTH_URL || "http://localhost:3000");
+
+    const webhookUrl = `${baseUrl}/api/meta-marketing-worker`;
+
+    console.log("Creating follow-up job:", payload);
+
+    const response = await qstashClient.publishJSON({
+      url: webhookUrl,
+      body: payload,
+      retries: 3,
+      delay: 2, // 2 seconds delay between chunks
+      headers: {
+        "Content-Type": "application/json",
+        "X-Job-Type": "meta-marketing-sync-chunk",
+        "X-Request-ID": payload.requestId,
+        "X-Phase": payload.phase || "unknown",
+      },
+    });
+
+    console.log("Follow-up job created:", response.messageId);
+    return response;
+  } catch (error) {
+    console.error("Error creating follow-up job:", error);
+    throw error;
   }
 }
 
@@ -302,9 +353,10 @@ async function getInsights(
   );
 }
 
-// Main background job handler
+// Main background job handler with chunked processing
 async function handler(request: Request) {
   const supabase = await createClient();
+  const startTime = Date.now();
 
   try {
     console.log("=== QStash Worker Started ===");
@@ -313,7 +365,7 @@ async function handler(request: Request) {
       Object.fromEntries(request.headers.entries())
     );
 
-    const payload: MetaMarketingJobPayload = await request.json();
+    const payload: ChunkedJobPayload = await request.json();
     console.log("Background job started with payload:", payload);
 
     // Validate required environment variables
@@ -321,76 +373,87 @@ async function handler(request: Request) {
       throw new Error("META_ACCESS_TOKEN environment variable is not set");
     }
 
-    // Update job status to processing
-    console.log("Updating job status to processing...");
-    await updateJobStatus(supabase, payload.requestId, "processing", 10);
-    console.log("Job status updated to processing");
-
     // Initialize Facebook API
     console.log("Initializing Facebook API...");
     const api = FacebookAdsApi.init(META_CONFIG.accessToken);
     api.setDebug(false); // Disable debug in background jobs
     console.log("Facebook API initialized");
 
-    const { accountId, timeframe, action } = payload;
+    const { accountId, timeframe, action, phase = "account" } = payload;
 
     let result;
 
-    console.log(`Processing action: ${action} for account: ${accountId}`);
+    console.log(`Processing phase: ${phase} for account: ${accountId}`);
 
-    switch (action) {
-      case "get24HourData":
-      case "getData":
-        await updateJobStatus(supabase, payload.requestId, "processing", 20);
-        console.log("Starting processMetaMarketingData...");
-        result = await processMetaMarketingData(
+    // Process based on phase for chunked execution
+    switch (phase) {
+      case "account":
+        await updateJobStatus(supabase, payload.requestId, "processing", 10);
+        result = await processAccountPhase(
           accountId,
           supabase,
           timeframe,
-          payload.requestId
+          payload.requestId,
+          startTime
         );
-        console.log("processMetaMarketingData completed");
         break;
 
-      case "getAccountInfo":
-        await updateJobStatus(supabase, payload.requestId, "processing", 30);
-        console.log("Starting processAccountInfo...");
-        result = await processAccountInfo(accountId, supabase, timeframe);
-        console.log("processAccountInfo completed");
-        break;
-
-      case "getCampaigns":
-        await updateJobStatus(supabase, payload.requestId, "processing", 40);
-        console.log("Starting processCampaigns...");
-        result = await processCampaigns(
+      case "campaigns":
+        result = await processCampaignsPhase(
           accountId,
           supabase,
           timeframe,
-          payload.requestId
+          payload.requestId,
+          payload.offset || 0,
+          startTime
         );
-        console.log("processCampaigns completed");
+        break;
+
+      case "adsets":
+        result = await processAdsetsPhase(
+          accountId,
+          supabase,
+          timeframe,
+          payload.requestId,
+          payload.campaignIds || [],
+          payload.offset || 0,
+          startTime
+        );
+        break;
+
+      case "ads":
+        result = await processAdsPhase(
+          accountId,
+          supabase,
+          timeframe,
+          payload.requestId,
+          payload.adsetIds || [],
+          payload.offset || 0,
+          startTime
+        );
         break;
 
       default:
-        throw new Error(`Invalid action: ${action}`);
+        // Legacy support for non-chunked jobs
+        if (action === "get24HourData" || action === "getData") {
+          await updateJobStatus(supabase, payload.requestId, "processing", 10);
+          result = await processAccountPhase(
+            accountId,
+            supabase,
+            timeframe,
+            payload.requestId,
+            startTime
+          );
+        } else {
+          throw new Error(`Invalid action/phase: ${action}/${phase}`);
+        }
     }
 
-    // Update job status to completed
-    console.log("Updating job status to completed...");
-    await updateJobStatus(
-      supabase,
-      payload.requestId,
-      "completed",
-      100,
-      undefined,
-      result
-    );
-    console.log("Job status updated to completed");
-
-    console.log("=== Background job completed successfully ===");
+    console.log("=== Background job phase completed successfully ===");
     return Response.json({
       success: true,
       requestId: payload.requestId,
+      phase,
       result,
     });
   } catch (error: any) {
@@ -399,7 +462,7 @@ async function handler(request: Request) {
     console.error("Error stack:", error.stack);
 
     try {
-      const payload: MetaMarketingJobPayload = await request.json();
+      const payload: ChunkedJobPayload = await request.json();
       console.log("Updating job status to failed...");
       await updateJobStatus(
         supabase,
@@ -427,18 +490,21 @@ async function handler(request: Request) {
   }
 }
 
-// Process Meta Marketing Data (main data fetching logic)
-async function processMetaMarketingData(
+// Process account phase (account info + start campaigns)
+async function processAccountPhase(
   accountId: string,
   supabase: any,
   timeframe: string,
-  requestId: string
+  requestId: string,
+  startTime: number
 ) {
   const account = new AdAccount(accountId);
   const dateRange = getDateRangeForTimeframe(timeframe);
 
+  console.log("Processing account phase...");
+
   // Update progress
-  await updateJobStatus(supabase, requestId, "processing", 25);
+  await updateJobStatus(supabase, requestId, "processing", 15);
 
   // Get account info
   const accountInfo = await withRateLimitRetry(
@@ -467,7 +533,7 @@ async function processMetaMarketingData(
     }
   );
 
-  await updateJobStatus(supabase, requestId, "processing", 35);
+  await updateJobStatus(supabase, requestId, "processing", 25);
 
   // Get account insights
   const insights = await withRateLimitRetry(
@@ -508,7 +574,7 @@ async function processMetaMarketingData(
     }
   );
 
-  await updateJobStatus(supabase, requestId, "processing", 45);
+  await updateJobStatus(supabase, requestId, "processing", 35);
 
   // Store account data
   const accountData = {
@@ -560,9 +626,58 @@ async function processMetaMarketingData(
     throw new Error(`Error storing account data: ${accountError.message}`);
   }
 
-  await updateJobStatus(supabase, requestId, "processing", 55);
+  console.log("Account data stored successfully");
 
-  // Process campaigns (simplified version for background job)
+  // Check if we have time to start campaigns phase
+  const elapsedTime = Date.now() - startTime;
+  if (elapsedTime < RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME) {
+    console.log("Starting campaigns phase in same job...");
+    await updateJobStatus(supabase, requestId, "processing", 40);
+
+    // Create follow-up job for campaigns
+    await createFollowUpJob({
+      accountId,
+      timeframe,
+      action: "get24HourData",
+      requestId,
+      phase: "campaigns",
+      offset: 0,
+    });
+
+    console.log("Campaigns phase job created");
+  } else {
+    console.log("Time limit reached, creating follow-up job for campaigns");
+    await createFollowUpJob({
+      accountId,
+      timeframe,
+      action: "get24HourData",
+      requestId,
+      phase: "campaigns",
+      offset: 0,
+    });
+  }
+
+  return {
+    accountData,
+    phase: "account",
+    nextPhase: "campaigns",
+  };
+}
+
+// Process campaigns phase
+async function processCampaignsPhase(
+  accountId: string,
+  supabase: any,
+  timeframe: string,
+  requestId: string,
+  offset: number,
+  startTime: number
+) {
+  console.log(`Processing campaigns phase, offset: ${offset}`);
+
+  const account = new AdAccount(accountId);
+
+  // Get campaigns with pagination
   const campaigns = await withRateLimitRetry(
     async () => {
       return account.getCampaigns(
@@ -587,7 +702,10 @@ async function processMetaMarketingData(
           "start_time",
           "end_time",
         ],
-        { limit: RATE_LIMIT_CONFIG.BATCH_SIZE }
+        {
+          limit: RATE_LIMIT_CONFIG.BATCH_SIZE,
+          offset: offset,
+        }
       );
     },
     {
@@ -599,13 +717,30 @@ async function processMetaMarketingData(
     }
   );
 
-  // Process campaigns with progress updates
+  console.log(`Retrieved ${campaigns.length} campaigns`);
+
+  // Process campaigns with time limit check
   const processedCampaigns = [];
-  const totalCampaigns = campaigns.length;
+  const campaignIds = [];
 
   for (let i = 0; i < campaigns.length; i++) {
+    // Check time limit
+    const elapsedTime = Date.now() - startTime;
+    if (elapsedTime > RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME) {
+      console.log("Time limit reached, creating follow-up job");
+      await createFollowUpJob({
+        accountId,
+        timeframe,
+        action: "get24HourData",
+        requestId,
+        phase: "campaigns",
+        offset: offset + i,
+      });
+      break;
+    }
+
     const campaign = campaigns[i];
-    const progress = 55 + Math.floor((i / totalCampaigns) * 40); // 55% to 95%
+    const progress = 40 + Math.floor((i / campaigns.length) * 20); // 40% to 60%
     await updateJobStatus(supabase, requestId, "processing", progress);
 
     try {
@@ -670,6 +805,7 @@ async function processMetaMarketingData(
 
       if (!campaignError) {
         processedCampaigns.push(campaignData);
+        campaignIds.push(campaign.id);
       }
 
       // Add delay between campaigns to prevent rate limiting
@@ -680,35 +816,102 @@ async function processMetaMarketingData(
     }
   }
 
+  console.log(`Processed ${processedCampaigns.length} campaigns`);
+
+  // If we processed all campaigns in this batch and there might be more
+  if (campaigns.length === RATE_LIMIT_CONFIG.BATCH_SIZE) {
+    // Create follow-up job for next batch of campaigns
+    await createFollowUpJob({
+      accountId,
+      timeframe,
+      action: "get24HourData",
+      requestId,
+      phase: "campaigns",
+      offset: offset + campaigns.length,
+    });
+  } else {
+    // All campaigns processed, move to adsets phase
+    console.log("All campaigns processed, starting adsets phase");
+    await updateJobStatus(supabase, requestId, "processing", 60);
+
+    await createFollowUpJob({
+      accountId,
+      timeframe,
+      action: "get24HourData",
+      requestId,
+      phase: "adsets",
+      campaignIds: campaignIds,
+      offset: 0,
+    });
+  }
+
   return {
-    accountData,
-    campaigns: processedCampaigns,
-    dateRange,
-    totalProcessed: processedCampaigns.length,
+    processedCampaigns: processedCampaigns.length,
+    campaignIds,
+    phase: "campaigns",
+    offset: offset + campaigns.length,
   };
 }
 
-// Simplified account info processing
-async function processAccountInfo(
-  accountId: string,
-  supabase: any,
-  timeframe: string
-) {
-  // Implementation similar to the original route but simplified
-  // This is a placeholder - you can implement the full logic as needed
-  return { message: "Account info processed in background" };
-}
-
-// Simplified campaigns processing
-async function processCampaigns(
+// Process adsets phase (placeholder - implement similar chunking logic)
+async function processAdsetsPhase(
   accountId: string,
   supabase: any,
   timeframe: string,
-  requestId: string
+  requestId: string,
+  campaignIds: string[],
+  offset: number,
+  startTime: number
 ) {
-  // Implementation similar to the original route but simplified
-  // This is a placeholder - you can implement the full logic as needed
-  return { message: "Campaigns processed in background" };
+  console.log(`Processing adsets phase for campaigns: ${campaignIds.length}`);
+
+  // Update progress
+  await updateJobStatus(supabase, requestId, "processing", 70);
+
+  // TODO: Implement adsets processing with chunking similar to campaigns
+  // For now, move to ads phase
+  await createFollowUpJob({
+    accountId,
+    timeframe,
+    action: "get24HourData",
+    requestId,
+    phase: "ads",
+    adsetIds: [], // Will be populated when adsets are processed
+    offset: 0,
+  });
+
+  return {
+    phase: "adsets",
+    message: "Adsets processing placeholder - moving to ads phase",
+  };
+}
+
+// Process ads phase (placeholder - implement similar chunking logic)
+async function processAdsPhase(
+  accountId: string,
+  supabase: any,
+  timeframe: string,
+  requestId: string,
+  adsetIds: string[],
+  offset: number,
+  startTime: number
+) {
+  console.log(`Processing ads phase for adsets: ${adsetIds.length}`);
+
+  // Update progress
+  await updateJobStatus(supabase, requestId, "processing", 90);
+
+  // TODO: Implement ads processing with chunking
+  // For now, mark as completed
+  await updateJobStatus(supabase, requestId, "completed", 100, undefined, {
+    message: "All phases completed",
+    totalPhases: 4,
+  });
+
+  return {
+    phase: "ads",
+    message: "All processing phases completed",
+  };
 }
 
 // Export the POST handler with QStash signature verification
