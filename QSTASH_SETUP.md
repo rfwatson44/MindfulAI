@@ -11,27 +11,49 @@ The Meta Marketing API route has been refactored to use QStash background jobs t
 3. Processes the data in the background worker
 4. Allows clients to check progress via the status endpoint
 
-## Required Environment Variables
+## Environment Variables Required
 
-Add these to your `.env.local` file:
+Add these environment variables to your Vercel project:
+
+### QStash Configuration
 
 ```bash
-# QStash Configuration
+# Required: Get from Upstash QStash Console
 QSTASH_TOKEN=your_qstash_token_here
+
+# Required: Get from Upstash QStash Console (for webhook signature verification)
 QSTASH_CURRENT_SIGNING_KEY=your_current_signing_key
 QSTASH_NEXT_SIGNING_KEY=your_next_signing_key
+```
 
-# Deployment URL (for webhook callbacks)
-VERCEL_URL=your-app.vercel.app
-# OR for local development:
-NEXTAUTH_URL=http://localhost:3000
+### Webhook URL Configuration
 
-# Existing Meta API Configuration
-META_ACCESS_TOKEN=your_meta_access_token
+```bash
+# Option 1: Set explicit webhook base URL (RECOMMENDED for production)
+WEBHOOK_BASE_URL=https://your-production-domain.com
 
-# Supabase Configuration (existing)
+# Option 2: Let the system auto-detect (fallback order):
+# 1. WEBHOOK_BASE_URL (if set)
+# 2. VERCEL_PROJECT_PRODUCTION_URL (auto-set by Vercel)
+# 3. NEXTAUTH_URL (if using NextAuth)
+# 4. http://localhost:3000 (development fallback)
+```
+
+### Important Notes:
+
+- **WEBHOOK_BASE_URL**: Set this to your production domain (e.g., `https://mindfulai.com`) to ensure webhooks work correctly
+- **VERCEL_PROJECT_PRODUCTION_URL**: This is automatically set by Vercel to your production domain without the protocol
+- **VERCEL_URL**: This contains preview deployment URLs and should NOT be used for webhooks
+- For development, the system will fallback to localhost
+
+### Supabase Configuration
+
+Make sure your Supabase connection is properly configured:
+
+```bash
 NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 ```
 
 ## Getting QStash Credentials

@@ -19,14 +19,25 @@ export async function startMetaMarketingBackgroundJob(
 ) {
   try {
     // Get the base URL for the webhook endpoint
-    const baseUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : process.env.NEXTAUTH_URL || "http://localhost:3000";
+    // Priority: WEBHOOK_BASE_URL > VERCEL_PROJECT_PRODUCTION_URL > NEXTAUTH_URL > localhost
+    const baseUrl =
+      process.env.WEBHOOK_BASE_URL ||
+      (process.env.VERCEL_PROJECT_PRODUCTION_URL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+        : process.env.NEXTAUTH_URL || "http://localhost:3000");
 
     const webhookUrl = `${baseUrl}/api/meta-marketing-worker`;
 
     console.log("Starting background job with payload:", payload);
     console.log("Webhook URL:", webhookUrl);
+    console.log("Environment variables check:", {
+      WEBHOOK_BASE_URL: process.env.WEBHOOK_BASE_URL ? "Set" : "Not set",
+      VERCEL_PROJECT_PRODUCTION_URL: process.env.VERCEL_PROJECT_PRODUCTION_URL
+        ? "Set"
+        : "Not set",
+      VERCEL_URL: process.env.VERCEL_URL ? "Set" : "Not set",
+      NEXTAUTH_URL: process.env.NEXTAUTH_URL ? "Set" : "Not set",
+    });
 
     const response = await qstashClient.publishJSON({
       url: webhookUrl,

@@ -70,25 +70,51 @@ async function updateJobStatus(
   result?: any
 ) {
   try {
-    await supabase.from("background_jobs").upsert(
-      [
-        {
-          request_id: requestId,
-          job_type: "meta-marketing-sync",
-          status,
-          progress: progress || 0,
-          error_message: error,
-          result_data: result,
-          updated_at: new Date(),
-        },
-      ],
-      {
+    console.log(
+      `Updating job status: ${requestId} -> ${status} (${progress}%)`
+    );
+
+    const updateData: any = {
+      request_id: requestId,
+      job_type: "meta-marketing-sync",
+      status,
+      progress: progress || 0,
+      error_message: error,
+      result_data: result,
+      updated_at: new Date().toISOString(),
+    };
+
+    // If this is the first update, include created_at
+    if (status === "processing" && progress === 10) {
+      updateData.created_at = new Date().toISOString();
+    }
+
+    console.log("Update data:", updateData);
+
+    const { data, error: updateError } = await supabase
+      .from("background_jobs")
+      .upsert([updateData], {
         onConflict: "request_id",
         ignoreDuplicates: false,
-      }
-    );
+      })
+      .select();
+
+    if (updateError) {
+      console.error("Supabase update error:", updateError);
+      throw updateError;
+    }
+
+    console.log("Job status updated successfully:", data);
   } catch (err) {
     console.error("Error updating job status:", err);
+    console.error("Error details:", {
+      requestId,
+      status,
+      progress,
+      error,
+      supabaseError: err,
+    });
+    // Don't throw here to prevent the main job from failing due to status update issues
   }
 }
 
@@ -281,45 +307,68 @@ async function handler(request: Request) {
   const supabase = await createClient();
 
   try {
+    console.log("=== QStash Worker Started ===");
+    console.log(
+      "Request headers:",
+      Object.fromEntries(request.headers.entries())
+    );
+
     const payload: MetaMarketingJobPayload = await request.json();
     console.log("Background job started with payload:", payload);
 
+    // Validate required environment variables
+    if (!process.env.META_ACCESS_TOKEN) {
+      throw new Error("META_ACCESS_TOKEN environment variable is not set");
+    }
+
     // Update job status to processing
+    console.log("Updating job status to processing...");
     await updateJobStatus(supabase, payload.requestId, "processing", 10);
+    console.log("Job status updated to processing");
 
     // Initialize Facebook API
+    console.log("Initializing Facebook API...");
     const api = FacebookAdsApi.init(META_CONFIG.accessToken);
     api.setDebug(false); // Disable debug in background jobs
+    console.log("Facebook API initialized");
 
     const { accountId, timeframe, action } = payload;
 
     let result;
 
+    console.log(`Processing action: ${action} for account: ${accountId}`);
+
     switch (action) {
       case "get24HourData":
       case "getData":
         await updateJobStatus(supabase, payload.requestId, "processing", 20);
+        console.log("Starting processMetaMarketingData...");
         result = await processMetaMarketingData(
           accountId,
           supabase,
           timeframe,
           payload.requestId
         );
+        console.log("processMetaMarketingData completed");
         break;
 
       case "getAccountInfo":
         await updateJobStatus(supabase, payload.requestId, "processing", 30);
+        console.log("Starting processAccountInfo...");
         result = await processAccountInfo(accountId, supabase, timeframe);
+        console.log("processAccountInfo completed");
         break;
 
       case "getCampaigns":
         await updateJobStatus(supabase, payload.requestId, "processing", 40);
+        console.log("Starting processCampaigns...");
         result = await processCampaigns(
           accountId,
           supabase,
           timeframe,
           payload.requestId
         );
+        console.log("processCampaigns completed");
         break;
 
       default:
@@ -327,6 +376,7 @@ async function handler(request: Request) {
     }
 
     // Update job status to completed
+    console.log("Updating job status to completed...");
     await updateJobStatus(
       supabase,
       payload.requestId,
@@ -335,30 +385,42 @@ async function handler(request: Request) {
       undefined,
       result
     );
+    console.log("Job status updated to completed");
 
-    console.log("Background job completed successfully");
+    console.log("=== Background job completed successfully ===");
     return Response.json({
       success: true,
       requestId: payload.requestId,
       result,
     });
   } catch (error: any) {
-    console.error("Background job failed:", error);
+    console.error("=== Background job failed ===");
+    console.error("Error details:", error);
+    console.error("Error stack:", error.stack);
 
-    const payload: MetaMarketingJobPayload = await request.json();
-    await updateJobStatus(
-      supabase,
-      payload.requestId,
-      "failed",
-      0,
-      error.message || "Unknown error occurred"
-    );
+    try {
+      const payload: MetaMarketingJobPayload = await request.json();
+      console.log("Updating job status to failed...");
+      await updateJobStatus(
+        supabase,
+        payload.requestId,
+        "failed",
+        0,
+        error.message || "Unknown error occurred"
+      );
+      console.log("Job status updated to failed");
+    } catch (parseError) {
+      console.error(
+        "Could not parse request payload for error handling:",
+        parseError
+      );
+    }
 
     return Response.json(
       {
         success: false,
         error: error.message || "Unknown error occurred",
-        requestId: payload.requestId,
+        requestId: "unknown",
       },
       { status: 500 }
     );
