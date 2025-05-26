@@ -464,8 +464,7 @@ async function handler(request: Request) {
           timeframe,
           payload.requestId,
           payload.after || "",
-          startTime,
-          payload.campaignIds || []
+          startTime
         );
         break;
 
@@ -762,8 +761,7 @@ async function processCampaignsPhase(
   timeframe: string,
   requestId: string,
   after: string,
-  startTime: number,
-  existingCampaignIds: string[] = []
+  startTime: number
 ) {
   // Check for cancellation at the start
   if (await checkJobCancellation(supabase, requestId)) {
@@ -771,13 +769,10 @@ async function processCampaignsPhase(
     return { phase: "campaigns", status: "cancelled" };
   }
 
-  console.log(`Processing campaigns phase, after: ${after}`);
   console.log(
-    `Existing campaign IDs from previous batches: ${existingCampaignIds.length}`
+    `Processing campaigns phase for account: ${accountId}, after: ${after}`
   );
   console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
-
-  const account = new AdAccount(accountId);
 
   // Check time before starting
   if (shouldCreateFollowUpJob(startTime)) {
@@ -793,249 +788,275 @@ async function processCampaignsPhase(
     return { phase: "campaigns", status: "deferred_due_to_time_limit", after };
   }
 
-  // Get campaigns with cursor-based pagination
-  const campaignsResponse = await withRateLimitRetry(
-    async () => {
-      const params: any = {
-        limit: RATE_LIMIT_CONFIG.BATCH_SIZE,
-      };
+  // Update progress
+  await updateJobStatus(supabase, requestId, "processing", 40);
 
-      // Only add 'after' parameter if it's not empty
-      if (after && after.trim() !== "") {
-        params.after = after;
-      }
-
-      return account.getCampaigns(
-        [
-          "name",
-          "status",
-          "objective",
-          "special_ad_categories",
-          "bid_strategy",
-          "budget_remaining",
-          "buying_type",
-          "daily_budget",
-          "lifetime_budget",
-          "configured_status",
-          "effective_status",
-          "source_campaign_id",
-          "promoted_object",
-          "recommendations",
-          "spend_cap",
-          "topline_id",
-          "pacing_type",
-          "start_time",
-          "end_time",
-        ],
-        params
-      );
-    },
-    {
-      accountId,
-      endpoint: "campaigns",
-      callType: "READ",
-      points: RATE_LIMIT_CONFIG.POINTS.READ,
-      supabase,
-    }
-  );
-
-  // Extract campaigns and pagination info
-  const campaigns = Array.isArray(campaignsResponse)
-    ? campaignsResponse
-    : (campaignsResponse as any).data || [];
-  const paging = (campaignsResponse as any).paging || null;
-  const nextCursor = paging?.cursors?.after || null;
-
-  console.log(`Retrieved ${campaigns.length} campaigns`);
-  console.log(`Next cursor: ${nextCursor || "none"}`);
-
-  // Process campaigns with aggressive time checking
   const processedCampaigns = [];
-  const campaignIds = [...existingCampaignIds]; // Start with existing campaign IDs from previous batches
+  const campaignIds = [];
   let totalErrors = 0;
 
-  console.log(
-    `Starting with ${campaignIds.length} campaign IDs from previous batches`
-  );
+  // Enhanced fields for comprehensive campaign data collection
+  const campaignFields = [
+    "id",
+    "name",
+    "status",
+    "configured_status",
+    "effective_status",
+    "objective",
+    "buying_type",
+    "bid_strategy",
+    "daily_budget",
+    "lifetime_budget",
+    "budget_remaining",
+    "spend_cap",
+    "start_time",
+    "stop_time",
+    "created_time",
+    "updated_time",
+    "promoted_object",
+    "pacing_type",
+    "special_ad_categories",
+    "source_campaign_id",
+    "topline_id",
+    "recommendations",
+  ];
 
-  for (let i = 0; i < campaigns.length; i++) {
-    // Check time limit more frequently
-    if (shouldCreateFollowUpJob(startTime)) {
+  try {
+    const account = new AdAccount(accountId);
+
+    // Get campaigns with comprehensive fields
+    const campaigns = await withRateLimitRetry(
+      async () => {
+        return account.getCampaigns(campaignFields, {
+          limit: RATE_LIMIT_CONFIG.BATCH_SIZE,
+          after: after,
+        });
+      },
+      {
+        accountId,
+        endpoint: "campaigns",
+        callType: "READ",
+        points: RATE_LIMIT_CONFIG.POINTS.READ,
+        supabase,
+      }
+    );
+
+    console.log(`Retrieved ${campaigns.length} campaigns`);
+
+    // Process each campaign
+    for (let i = 0; i < campaigns.length; i++) {
+      // Check time limit frequently
+      if (shouldCreateFollowUpJob(startTime)) {
+        console.log(`Time limit reached after processing ${i} campaigns`);
+        // Create follow-up job with the next cursor
+        const nextAfter = campaigns[i]?.id || after;
+        await createFollowUpJob({
+          accountId,
+          timeframe,
+          action: "get24HourData",
+          requestId,
+          phase: "campaigns",
+          after: nextAfter,
+        });
+        break;
+      }
+
+      const campaign = campaigns[i];
+      const progress = 40 + Math.floor(((i + 1) / campaigns.length) * 20); // 40% to 60%
+
       console.log(
-        `Time limit reached after processing ${i} campaigns, creating follow-up job`
+        `Processing campaign ${i + 1}/${campaigns.length}: ${campaign.name} (${
+          campaign.id
+        })`
       );
+      console.log(`Progress: ${progress}%`);
+      console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
+
+      await updateJobStatus(supabase, requestId, "processing", progress);
+
+      try {
+        // Get insights for this campaign if we have time
+        let campaignInsights = null;
+        if (getRemainingTime(startTime) > 15000) {
+          console.log(`🔍 Getting insights for campaign ${campaign.id}...`);
+          campaignInsights = await getInsights(
+            campaign as InsightCapableEntity,
+            supabase,
+            accountId,
+            timeframe
+          );
+          console.log(`📊 Campaign insights retrieved for ${campaign.id}`);
+        } else {
+          console.log("⏰ Skipping campaign insights due to time constraints");
+        }
+
+        // Create comprehensive campaign data structure with all database fields
+        const campaignData = {
+          campaign_id: campaign.id,
+          account_id: accountId,
+          name: campaign.name || "",
+          status: campaign.status || "UNKNOWN",
+          configured_status: campaign.configured_status || null,
+          effective_status: campaign.effective_status || null,
+          objective: campaign.objective || "",
+          buying_type: campaign.buying_type || null,
+          bid_strategy: campaign.bid_strategy || null,
+          daily_budget: campaign.daily_budget
+            ? parseFloat(campaign.daily_budget)
+            : null,
+          lifetime_budget: campaign.lifetime_budget
+            ? parseFloat(campaign.lifetime_budget)
+            : null,
+          budget_remaining: campaign.budget_remaining
+            ? parseFloat(campaign.budget_remaining)
+            : null,
+          spend_cap: campaign.spend_cap ? parseFloat(campaign.spend_cap) : null,
+          start_time: campaign.start_time
+            ? new Date(campaign.start_time).toISOString()
+            : null,
+          end_time: campaign.stop_time
+            ? new Date(campaign.stop_time).toISOString()
+            : null,
+          promoted_object: campaign.promoted_object || null,
+          pacing_type: campaign.pacing_type || null,
+          special_ad_categories: campaign.special_ad_categories || [],
+          source_campaign_id: campaign.source_campaign_id || null,
+          topline_id: campaign.topline_id || null,
+          recommendations: campaign.recommendations || null,
+          // Insights data
+          impressions: safeParseInt(campaignInsights?.impressions),
+          clicks: safeParseInt(campaignInsights?.clicks),
+          reach: safeParseInt(campaignInsights?.reach),
+          spend: safeParseFloat(campaignInsights?.spend),
+          conversions: campaignInsights?.actions
+            ? campaignInsights.actions.reduce((acc: any, action: any) => {
+                acc[action.action_type] = action.value;
+                return acc;
+              }, {})
+            : null,
+          cost_per_conversion:
+            campaignInsights?.actions && campaignInsights.actions.length > 0
+              ? safeParseFloat(campaignInsights.spend) /
+                campaignInsights.actions.reduce(
+                  (sum: number, action: any) =>
+                    sum + safeParseInt(action.value),
+                  0
+                )
+              : null,
+          last_updated: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+
+        console.log(`💾 Attempting to store campaign ${campaign.id}`);
+        console.log(`📋 Campaign data structure:`, {
+          campaign_id: campaignData.campaign_id,
+          account_id: campaignData.account_id,
+          name: campaignData.name,
+          status: campaignData.status,
+          objective: campaignData.objective,
+          buying_type: campaignData.buying_type,
+          bid_strategy: campaignData.bid_strategy,
+          daily_budget: campaignData.daily_budget,
+          lifetime_budget: campaignData.lifetime_budget,
+        });
+
+        const { error: campaignError } = await supabase
+          .from("meta_campaigns")
+          .upsert([campaignData], {
+            onConflict: "campaign_id",
+            ignoreDuplicates: false,
+          });
+
+        if (campaignError) {
+          console.error(
+            `❌ Error storing campaign ${campaign.id}:`,
+            campaignError
+          );
+          console.error(`❌ Error code:`, campaignError.code);
+          console.error(`❌ Error message:`, campaignError.message);
+          console.error(`❌ Error details:`, campaignError.details);
+          console.error(`❌ Error hint:`, campaignError.hint);
+          console.error(
+            `❌ Campaign data that failed:`,
+            JSON.stringify(campaignData, null, 2)
+          );
+          totalErrors++;
+        } else {
+          console.log(`✅ Successfully stored campaign ${campaign.id}`);
+          processedCampaigns.push(campaignData);
+          campaignIds.push(campaign.id);
+        }
+
+        await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
+      } catch (error: any) {
+        console.error(`❌ Error processing campaign ${campaign.id}:`, error);
+        console.error(`❌ Error stack:`, error.stack);
+        totalErrors++;
+        continue;
+      }
+    }
+
+    console.log(`\n=== CAMPAIGNS PHASE SUMMARY ===`);
+    console.log(`Total campaigns processed: ${processedCampaigns.length}`);
+    console.log(`Total errors: ${totalErrors}`);
+    console.log(`Campaign IDs collected: ${campaignIds.length}`);
+    console.log(`Campaign IDs: ${campaignIds.join(", ")}`);
+
+    // Determine next action
+    const hasMore = campaigns.length === RATE_LIMIT_CONFIG.BATCH_SIZE;
+    const nextAfter =
+      campaigns.length > 0 ? campaigns[campaigns.length - 1].id : after;
+
+    if (hasMore && !shouldCreateFollowUpJob(startTime)) {
+      // More campaigns to fetch
+      console.log("🔄 Creating follow-up job for more campaigns");
+      console.log(`Next after cursor: ${nextAfter}`);
       await createFollowUpJob({
         accountId,
         timeframe,
         action: "get24HourData",
         requestId,
         phase: "campaigns",
-        after: after,
-        campaignIds: campaignIds,
+        after: nextAfter,
       });
-      break;
-    }
+    } else {
+      // All campaigns processed, move to adsets phase
+      console.log("✅ All campaigns processed, starting adsets phase");
+      console.log(`Total campaign IDs collected: ${campaignIds.length}`);
+      await updateJobStatus(supabase, requestId, "processing", 60);
 
-    const campaign = campaigns[i];
-    const progress =
-      40 + Math.floor(((i + 1) / Math.max(1, campaigns.length)) * 20); // 40% to 60%
-    await updateJobStatus(supabase, requestId, "processing", progress);
-
-    console.log(
-      `Processing campaign ${i + 1}/${
-        campaigns.length
-      }, remaining time: ${getRemainingTime(startTime)}ms`
-    );
-
-    try {
-      // Skip insights for campaigns if we're running low on time
-      let campaignInsights = null;
-      if (getRemainingTime(startTime) > 20000) {
-        // Only get insights if we have more than 20 seconds
-        campaignInsights = await getInsights(
-          campaign as InsightCapableEntity,
-          supabase,
+      if (campaignIds.length > 0) {
+        await createFollowUpJob({
           accountId,
-          timeframe
-        );
-      } else {
-        console.log("Skipping insights due to time constraints");
-      }
-
-      const campaignData = {
-        campaign_id: campaign.id,
-        account_id: accountId,
-        name: campaign.name,
-        status: campaign.status,
-        objective: campaign.objective,
-        special_ad_categories: campaign.special_ad_categories || [],
-        bid_strategy: campaign.bid_strategy,
-        budget_remaining: parseFloat(campaign.budget_remaining) || 0,
-        buying_type: campaign.buying_type,
-        daily_budget: parseFloat(campaign.daily_budget) || 0,
-        lifetime_budget: parseFloat(campaign.lifetime_budget) || 0,
-        configured_status: campaign.configured_status,
-        effective_status: campaign.effective_status,
-        source_campaign_id: campaign.source_campaign_id,
-        promoted_object: campaign.promoted_object,
-        recommendations: campaign.recommendations || [],
-        spend_cap: parseFloat(campaign.spend_cap) || null,
-        topline_id: campaign.topline_id,
-        pacing_type: campaign.pacing_type || [],
-        start_time: campaign.start_time ? new Date(campaign.start_time) : null,
-        end_time: campaign.end_time ? new Date(campaign.end_time) : null,
-        impressions: safeParseInt(campaignInsights?.impressions),
-        clicks: safeParseInt(campaignInsights?.clicks),
-        reach: safeParseInt(campaignInsights?.reach),
-        spend: safeParseFloat(campaignInsights?.spend),
-        conversions: campaignInsights?.actions
-          ? campaignInsights.actions.reduce((acc: any, action: any) => {
-              acc[action.action_type] = action.value;
-              return acc;
-            }, {})
-          : null,
-        cost_per_conversion:
-          campaignInsights?.actions && campaignInsights.actions.length > 0
-            ? safeParseFloat(campaignInsights.spend) /
-              campaignInsights.actions.reduce(
-                (sum: number, action: any) => sum + safeParseInt(action.value),
-                0
-              )
-            : null,
-        last_updated: new Date(),
-        created_at: new Date(),
-        updated_at: new Date(),
-      };
-
-      const { error: campaignError } = await supabase
-        .from("meta_campaigns")
-        .upsert([campaignData], {
-          onConflict: "campaign_id",
-          ignoreDuplicates: false,
+          timeframe,
+          action: "get24HourData",
+          requestId,
+          phase: "adsets",
+          campaignIds: campaignIds,
+          after: "",
         });
-
-      if (!campaignError) {
-        processedCampaigns.push(campaignData);
-        campaignIds.push(campaign.id);
+        console.log("🚀 Adsets phase job created successfully");
+      } else {
+        console.log("⚠️ No campaigns found, completing job");
+        await updateJobStatus(supabase, requestId, "completed", 100);
       }
-
-      // Reduced delay to process faster
-      await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
-    } catch (error: any) {
-      console.error(`❌ Error processing campaign ${campaign.id}:`, error);
-      console.error(`❌ Error stack:`, error.stack);
-      totalErrors++;
-      continue;
     }
-  }
 
-  console.log(`Processed ${processedCampaigns.length} campaigns`);
-  console.log(`Campaign IDs collected in this batch: ${campaignIds.length}`);
-  console.log(`Campaign IDs: ${campaignIds.join(", ")}`);
-
-  // Determine next action based on pagination
-  if (nextCursor && campaigns.length === RATE_LIMIT_CONFIG.BATCH_SIZE) {
-    // More campaigns to fetch
-    console.log("🔄 Creating follow-up job for next batch of campaigns");
-    console.log(`Next cursor: ${nextCursor}`);
-    console.log(`Campaigns processed so far: ${processedCampaigns.length}`);
-    console.log(`Campaign IDs collected so far: ${campaignIds.length}`);
-    await createFollowUpJob({
-      accountId,
-      timeframe,
-      action: "get24HourData",
-      requestId,
+    return {
+      processedCampaigns: processedCampaigns.length,
+      campaignIds,
       phase: "campaigns",
-      after: nextCursor,
-      campaignIds: campaignIds,
-    });
-  } else {
-    // All campaigns processed, move to adsets phase
-    console.log("✅ ALL CAMPAIGNS FETCHED - MOVING TO ADSETS PHASE");
-    console.log(`Total campaign IDs collected: ${campaignIds.length}`);
-    console.log(
-      `Campaign IDs: ${campaignIds.slice(0, 5).join(", ")}${
-        campaignIds.length > 5 ? "..." : ""
-      }`
-    );
-
-    if (campaignIds.length === 0) {
-      console.log("⚠️ No campaigns found, completing job");
-      await updateJobStatus(supabase, requestId, "completed", 100);
-      return {
-        processedCampaigns: processedCampaigns.length,
-        campaignIds: [],
-        phase: "campaigns",
-        after: nextCursor || "",
-        remainingTime: getRemainingTime(startTime),
-        completed: true,
-        message: "No campaigns found to process",
-      };
-    }
-
-    await updateJobStatus(supabase, requestId, "processing", 60);
-
-    console.log("🚀 Creating adsets phase job...");
-    await createFollowUpJob({
-      accountId,
-      timeframe,
-      action: "get24HourData",
-      requestId,
-      phase: "adsets",
-      campaignIds: campaignIds,
-      after: "",
-    });
-    console.log("✅ Adsets phase job created successfully");
+      after: nextAfter,
+      remainingTime: getRemainingTime(startTime),
+      hasMore,
+      completed: !hasMore,
+    };
+  } catch (error: any) {
+    console.error("❌ Error in campaigns phase:", error);
+    console.error("❌ Error stack:", error.stack);
+    throw error;
   }
-
-  return {
-    processedCampaigns: processedCampaigns.length,
-    campaignIds,
-    phase: "campaigns",
-    after: nextCursor || "",
-    remainingTime: getRemainingTime(startTime),
-    completed: processedCampaigns.length > 0,
-  };
 }
 
 // Process adsets phase (implement similar chunking logic)
@@ -1086,20 +1107,77 @@ async function processAdsetsPhase(
 
   console.log("✅ Account exists in meta_account_insights");
 
-  // Validate campaign IDs
+  // FALLBACK: If no campaign IDs provided, try to get them from database
+  let finalCampaignIds = campaignIds;
   if (!campaignIds || campaignIds.length === 0) {
-    console.error("❌ No campaign IDs provided to adsets phase");
-    throw new Error("No campaign IDs provided to process adsets");
+    console.log(
+      "⚠️ No campaign IDs provided, attempting to retrieve from database..."
+    );
+
+    const { data: dbCampaigns, error: dbCampaignsError } = await supabase
+      .from("meta_campaigns")
+      .select("campaign_id")
+      .eq("account_id", accountId)
+      .order("created_at", { ascending: false });
+
+    console.log("Database campaigns query result:", {
+      count: dbCampaigns?.length || 0,
+      error: dbCampaignsError,
+      sampleIds: dbCampaigns?.slice(0, 5).map((c: any) => c.campaign_id) || [],
+    });
+
+    if (dbCampaignsError) {
+      console.error(
+        "❌ Error retrieving campaigns from database:",
+        dbCampaignsError
+      );
+      throw new Error(
+        `Failed to retrieve campaigns from database: ${dbCampaignsError.message}`
+      );
+    }
+
+    if (!dbCampaigns || dbCampaigns.length === 0) {
+      console.error(
+        "❌ No campaigns found in database for account:",
+        accountId
+      );
+      throw new Error(
+        "No campaigns found in database. Please run campaigns phase first."
+      );
+    }
+
+    finalCampaignIds = dbCampaigns.map((c: any) => c.campaign_id);
+    console.log(
+      `✅ Retrieved ${finalCampaignIds.length} campaign IDs from database`
+    );
+    console.log(
+      `Campaign IDs from DB: ${finalCampaignIds.slice(0, 10).join(", ")}${
+        finalCampaignIds.length > 10 ? "..." : ""
+      }`
+    );
+  }
+
+  // Validate campaign IDs
+  if (!finalCampaignIds || finalCampaignIds.length === 0) {
+    console.error("❌ No campaign IDs available to process adsets");
+    throw new Error("No campaign IDs available to process adsets");
   }
 
   console.log("=== PROCESSING ADSETS PHASE ===");
-  console.log(`Campaign IDs to process: ${campaignIds.length}`);
-  console.log(`Campaign IDs: ${campaignIds.join(", ")}`);
+  console.log(`Campaign IDs to process: ${finalCampaignIds.length}`);
+  console.log(
+    `Campaign IDs: ${finalCampaignIds.slice(0, 10).join(", ")}${
+      finalCampaignIds.length > 10 ? "..." : ""
+    }`
+  );
 
   // Process campaigns in batches
-  const batchSize = Math.min(RATE_LIMIT_CONFIG.BATCH_SIZE, campaignIds.length);
-  const currentBatch = campaignIds.slice(0, batchSize);
-  const remainingCampaigns = campaignIds.slice(batchSize);
+  const batchSize = Math.min(
+    RATE_LIMIT_CONFIG.BATCH_SIZE,
+    finalCampaignIds.length
+  );
+  const currentBatch = finalCampaignIds.slice(0, batchSize);
+  const remainingCampaigns = finalCampaignIds.slice(batchSize);
 
   console.log(`=== BATCH PROCESSING ===`);
   console.log(`Batch size: ${batchSize}`);
@@ -1112,6 +1190,37 @@ async function processAdsetsPhase(
   let totalAdsetsFound = 0;
   let totalAdsetsStored = 0;
   let totalErrors = 0;
+
+  // Enhanced fields for comprehensive adset data collection
+  const adsetFields = [
+    "id",
+    "name",
+    "status",
+    "configured_status",
+    "effective_status",
+    "optimization_goal",
+    "billing_event",
+    "bid_amount",
+    "bid_strategy",
+    "daily_budget",
+    "lifetime_budget",
+    "targeting",
+    "start_time",
+    "end_time",
+    "attribution_spec",
+    "destination_type",
+    "frequency_control_specs",
+    "is_dynamic_creative",
+    "issues_info",
+    "learning_stage_info",
+    "pacing_type",
+    "promoted_object",
+    "source_adset_id",
+    "targeting_optimization_types",
+    "use_new_app_click",
+    "created_time",
+    "updated_time",
+  ];
 
   for (let i = 0; i < currentBatch.length; i++) {
     console.log(
@@ -1151,29 +1260,18 @@ async function processAdsetsPhase(
 
       console.log(`📡 Fetching adsets for campaign ${campaignId}...`);
 
-      // Get adsets for this campaign
+      // Get adsets for this campaign with comprehensive fields
       const adsetsResponse = await withRateLimitRetry(
         async () => {
           console.log(
             `Making API call to get adsets for campaign ${campaignId}`
           );
-          const result = campaign.getAdSets(
-            [
-              "name",
-              "status",
-              "configured_status",
-              "effective_status",
-              "optimization_goal",
-              "billing_event",
-              "bid_amount",
-              "daily_budget",
-              "lifetime_budget",
-              "targeting",
-              "start_time",
-              "end_time",
-            ],
-            { limit: 50 }
-          );
+          console.log(`API call parameters:`, {
+            fields: adsetFields,
+            options: { limit: 50 },
+          });
+
+          const result = campaign.getAdSets(adsetFields, { limit: 50 });
           console.log(`API call completed for campaign ${campaignId}`);
           return result;
         },
@@ -1187,11 +1285,29 @@ async function processAdsetsPhase(
       );
 
       console.log(`📊 Raw adsets response type: ${typeof adsetsResponse}`);
-      console.log(`📊 Raw adsets response:`, adsetsResponse);
 
-      const adsets = Array.isArray(adsetsResponse)
-        ? adsetsResponse
-        : (adsetsResponse as any).data || [];
+      // More detailed response parsing
+      let adsets: any[] = [];
+      if (Array.isArray(adsetsResponse)) {
+        adsets = adsetsResponse;
+        console.log(`📊 Response is array with ${adsets.length} items`);
+      } else if (adsetsResponse && typeof adsetsResponse === "object") {
+        const responseObj = adsetsResponse as any;
+        if (responseObj.data) {
+          adsets = responseObj.data;
+          console.log(
+            `📊 Response has data property with ${adsets.length} items`
+          );
+        } else {
+          console.log(`📊 Response is object but no data property found`);
+          console.log(`📊 Response keys:`, Object.keys(responseObj));
+        }
+      } else {
+        console.log(
+          `📊 Response is neither array nor object:`,
+          typeof adsetsResponse
+        );
+      }
 
       console.log(
         `✅ Found ${adsets.length} adsets for campaign ${campaignId}`
@@ -1201,6 +1317,16 @@ async function processAdsetsPhase(
       if (adsets.length === 0) {
         console.log(`⚠️ No adsets found for campaign ${campaignId}`);
         continue;
+      }
+
+      // Log first adset details for debugging
+      if (adsets.length > 0) {
+        console.log(`📋 First adset details:`, {
+          id: adsets[0].id,
+          name: adsets[0].name,
+          status: adsets[0].status,
+          campaign_id: campaignId,
+        });
       }
 
       // Process each adset
@@ -1227,7 +1353,7 @@ async function processAdsetsPhase(
             console.log("⏰ Skipping adset insights due to time constraints");
           }
 
-          // Create simplified adset data structure
+          // Create comprehensive adset data structure with all database fields
           const adsetData = {
             ad_set_id: adset.id,
             campaign_id: campaignId,
@@ -1239,6 +1365,7 @@ async function processAdsetsPhase(
             optimization_goal: adset.optimization_goal || null,
             billing_event: adset.billing_event || null,
             bid_amount: adset.bid_amount ? parseFloat(adset.bid_amount) : null,
+            bid_strategy: adset.bid_strategy || null,
             daily_budget: adset.daily_budget
               ? parseFloat(adset.daily_budget)
               : null,
@@ -1252,6 +1379,20 @@ async function processAdsetsPhase(
             end_time: adset.end_time
               ? new Date(adset.end_time).toISOString()
               : null,
+            // Additional comprehensive fields
+            attribution_spec: adset.attribution_spec || null,
+            destination_type: adset.destination_type || null,
+            frequency_control_specs: adset.frequency_control_specs || null,
+            is_dynamic_creative: adset.is_dynamic_creative || null,
+            issues_info: adset.issues_info || null,
+            learning_stage_info: adset.learning_stage_info || null,
+            pacing_type: adset.pacing_type || null,
+            promoted_object: adset.promoted_object || null,
+            source_adset_id: adset.source_adset_id || null,
+            targeting_optimization_types:
+              adset.targeting_optimization_types || null,
+            use_new_app_click: adset.use_new_app_click || null,
+            // Insights data
             impressions: safeParseInt(adsetInsights?.impressions),
             clicks: safeParseInt(adsetInsights?.clicks),
             reach: safeParseInt(adsetInsights?.reach),
@@ -1390,21 +1531,12 @@ async function processAdsetsPhase(
     }
   }
 
-  console.log("=== ADSETS PHASE DEBUG END ===\n");
-
   return {
     processedAdsets: processedAdsets.length,
-    adsetIds,
     phase: "adsets",
-    remainingCampaigns: remainingCampaigns.length,
+    after: after,
     remainingTime: getRemainingTime(startTime),
-    summary: {
-      totalAdsetsFound,
-      totalAdsetsStored,
-      totalErrors,
-      campaignsProcessed: currentBatch.length,
-      campaignsRemaining: remainingCampaigns.length,
-    },
+    completed: remainingCampaigns.length === 0,
   };
 }
 
@@ -1450,6 +1582,322 @@ async function processAdsPhase(
   const processedAds = [];
   let totalErrors = 0;
 
+  // Enhanced fields for comprehensive ad data collection
+  const adFields = [
+    "id",
+    "name",
+    "status",
+    "configured_status",
+    "effective_status",
+    "creative",
+    "tracking_specs",
+    "conversion_specs",
+    "tracking_and_conversion_specs",
+    "created_time",
+    "updated_time",
+    "source_ad_id",
+    "recommendations",
+    "issues_info",
+    "engagement_audience",
+    "preview_url",
+    "template_url",
+    "thumbnail_url",
+    "instagram_permalink_url",
+    "effective_object_story_id",
+    "url_tags",
+  ];
+
+  // Helper function to fetch creative details with retries
+  async function fetchCreativeWithRetry(
+    creativeId: string,
+    maxRetries = 3
+  ): Promise<any> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(
+          `🎨 Fetching creative ${creativeId} (attempt ${attempt}/${maxRetries})`
+        );
+
+        const creative = await withRateLimitRetry(
+          async () => {
+            const { AdCreative } = require("facebook-nodejs-business-sdk");
+            const creativeObj = new AdCreative(creativeId);
+            return creativeObj.read([
+              "id",
+              "name",
+              "title",
+              "body",
+              "object_type",
+              "thumbnail_url",
+              "image_url",
+              "video_id",
+              "url_tags",
+              "template_url",
+              "instagram_permalink_url",
+              "effective_object_story_id",
+              "asset_feed_spec",
+              "object_story_spec",
+              "platform_customizations",
+            ]);
+          },
+          {
+            accountId,
+            endpoint: "creative",
+            callType: "READ",
+            points: RATE_LIMIT_CONFIG.POINTS.READ,
+            supabase,
+          }
+        );
+
+        console.log(`✅ Successfully fetched creative ${creativeId}`);
+        return creative;
+      } catch (error: any) {
+        console.error(
+          `❌ Creative fetch attempt ${attempt} failed for ${creativeId}:`,
+          error
+        );
+
+        // Check if it's a deleted creative or permission error
+        if (
+          error.response?.error?.code === 803 ||
+          error.response?.error?.message?.includes("does not exist") ||
+          error.response?.error?.message?.includes("not found")
+        ) {
+          console.log(`🗑️ Creative ${creativeId} appears to be deleted`);
+          return null; // Don't retry for deleted creatives
+        }
+
+        if (attempt >= maxRetries) {
+          console.error(
+            `❌ All retry attempts failed for creative ${creativeId}`
+          );
+          return null;
+        }
+
+        // Wait before retry with exponential backoff
+        await delay(1000 * Math.pow(2, attempt - 1));
+      }
+    }
+    return null;
+  }
+
+  // Helper function to determine creative type
+  function determineCreativeType(creative: any, adData: any): string {
+    if (!creative) {
+      // Fallback: check asset_feed_spec or object_story_spec
+      if (adData.asset_feed_spec) {
+        const assetFeed = adData.asset_feed_spec;
+        if (assetFeed.videos && assetFeed.videos.length > 0) return "VIDEO";
+        if (assetFeed.images && assetFeed.images.length > 0) return "IMAGE";
+      }
+
+      if (adData.object_story_spec?.link_data) {
+        const linkData = adData.object_story_spec.link_data;
+        if (linkData.video_id) return "VIDEO";
+        if (linkData.image_hash || linkData.picture) return "IMAGE";
+      }
+
+      return "UNKNOWN";
+    }
+
+    // Check creative object
+    if (creative.video_id) return "VIDEO";
+    if (creative.image_url || creative.thumbnail_url) return "IMAGE";
+
+    // Check object_story_spec
+    if (creative.object_story_spec?.link_data) {
+      const linkData = creative.object_story_spec.link_data;
+      if (linkData.video_id) return "VIDEO";
+      if (linkData.image_hash || linkData.picture) return "IMAGE";
+    }
+
+    // Check asset_feed_spec
+    if (creative.asset_feed_spec) {
+      const assetFeed = creative.asset_feed_spec;
+      if (assetFeed.videos && assetFeed.videos.length > 0) return "VIDEO";
+      if (assetFeed.images && assetFeed.images.length > 0) return "IMAGE";
+    }
+
+    return "UNKNOWN";
+  }
+
+  // Helper function to save ad engagement metrics
+  async function saveAdEngagementMetrics(
+    adId: string,
+    insights: any,
+    date: string
+  ) {
+    if (!insights) return;
+
+    try {
+      // Extract engagement metrics from insights
+      const engagementData = {
+        ad_id: adId,
+        date: date,
+        inline_link_clicks: safeParseInt(insights.inline_link_clicks),
+        inline_post_engagement: safeParseInt(insights.inline_post_engagement),
+        // Video metrics
+        video_30s_watched: insights.video_30_sec_watched_actions
+          ? safeParseInt(insights.video_30_sec_watched_actions[0]?.value)
+          : null,
+        video_25_percent_watched: insights.video_p25_watched_actions
+          ? safeParseInt(insights.video_p25_watched_actions[0]?.value)
+          : null,
+        video_50_percent_watched: insights.video_p50_watched_actions
+          ? safeParseInt(insights.video_p50_watched_actions[0]?.value)
+          : null,
+        video_75_percent_watched: insights.video_p75_watched_actions
+          ? safeParseInt(insights.video_p75_watched_actions[0]?.value)
+          : null,
+        video_95_percent_watched: insights.video_p95_watched_actions
+          ? safeParseInt(insights.video_p95_watched_actions[0]?.value)
+          : null,
+        // Engagement metrics
+        page_engagement: insights.actions?.find(
+          (a: any) => a.action_type === "page_engagement"
+        )?.value
+          ? safeParseInt(
+              insights.actions.find(
+                (a: any) => a.action_type === "page_engagement"
+              ).value
+            )
+          : null,
+        post_engagement: insights.actions?.find(
+          (a: any) => a.action_type === "post_engagement"
+        )?.value
+          ? safeParseInt(
+              insights.actions.find(
+                (a: any) => a.action_type === "post_engagement"
+              ).value
+            )
+          : null,
+        post_comments: insights.actions?.find(
+          (a: any) => a.action_type === "comment"
+        )?.value
+          ? safeParseInt(
+              insights.actions.find((a: any) => a.action_type === "comment")
+                .value
+            )
+          : null,
+        // Video view metrics
+        two_sec_video_views: insights.video_continuous_2_sec_watched_actions
+          ? safeParseInt(
+              insights.video_continuous_2_sec_watched_actions[0]?.value
+            )
+          : null,
+        three_sec_video_views: insights.actions?.find(
+          (a: any) => a.action_type === "video_view"
+        )?.value
+          ? safeParseInt(
+              insights.actions.find((a: any) => a.action_type === "video_view")
+                .value
+            )
+          : null,
+        thruplays: insights.video_thruplay_watched_actions
+          ? safeParseInt(insights.video_thruplay_watched_actions[0]?.value)
+          : null,
+        // Cost metrics
+        cost_per_link_click: insights.cost_per_action_type?.find(
+          (c: any) => c.action_type === "link_click"
+        )?.value
+          ? safeParseFloat(
+              insights.cost_per_action_type.find(
+                (c: any) => c.action_type === "link_click"
+              ).value
+            )
+          : null,
+        cost_per_post_engagement: insights.cost_per_action_type?.find(
+          (c: any) => c.action_type === "post_engagement"
+        )?.value
+          ? safeParseFloat(
+              insights.cost_per_action_type.find(
+                (c: any) => c.action_type === "post_engagement"
+              ).value
+            )
+          : null,
+        cost_per_page_engagement: insights.cost_per_action_type?.find(
+          (c: any) => c.action_type === "page_engagement"
+        )?.value
+          ? safeParseFloat(
+              insights.cost_per_action_type.find(
+                (c: any) => c.action_type === "page_engagement"
+              ).value
+            )
+          : null,
+        cost_per_thruplay: insights.cost_per_action_type?.find(
+          (c: any) => c.action_type === "video_thruplay_watched"
+        )?.value
+          ? safeParseFloat(
+              insights.cost_per_action_type.find(
+                (c: any) => c.action_type === "video_thruplay_watched"
+              ).value
+            )
+          : null,
+        cost_per_2sec_view: insights.cost_per_action_type?.find(
+          (c: any) => c.action_type === "video_continuous_2_sec_watched"
+        )?.value
+          ? safeParseFloat(
+              insights.cost_per_action_type.find(
+                (c: any) => c.action_type === "video_continuous_2_sec_watched"
+              ).value
+            )
+          : null,
+        cost_per_3sec_view: insights.cost_per_action_type?.find(
+          (c: any) => c.action_type === "video_view"
+        )?.value
+          ? safeParseFloat(
+              insights.cost_per_action_type.find(
+                (c: any) => c.action_type === "video_view"
+              ).value
+            )
+          : null,
+        // Calculated metrics
+        avg_watch_time_seconds: insights.video_avg_time_watched_actions
+          ? safeParseFloat(insights.video_avg_time_watched_actions[0]?.value)
+          : null,
+        // VTR and Hook Rate (calculated)
+        vtr_percentage:
+          insights.video_p25_watched_actions && insights.impressions
+            ? (safeParseInt(insights.video_p25_watched_actions[0]?.value) /
+                safeParseInt(insights.impressions)) *
+              100
+            : null,
+        hook_rate_percentage:
+          insights.video_continuous_2_sec_watched_actions &&
+          insights.impressions
+            ? (safeParseInt(
+                insights.video_continuous_2_sec_watched_actions[0]?.value
+              ) /
+                safeParseInt(insights.impressions)) *
+              100
+            : null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: metricsError } = await supabase
+        .from("ad_engagement_metrics")
+        .upsert([engagementData], {
+          onConflict: "ad_id,date",
+          ignoreDuplicates: false,
+        });
+
+      if (metricsError) {
+        console.error(
+          `❌ Error saving engagement metrics for ad ${adId}:`,
+          metricsError
+        );
+      } else {
+        console.log(`✅ Saved engagement metrics for ad ${adId}`);
+      }
+    } catch (error) {
+      console.error(
+        `❌ Error processing engagement metrics for ad ${adId}:`,
+        error
+      );
+    }
+  }
+
   // Process adsets in small batches to get their ads
   const adsetsToProcess = adsetIds.slice(0, RATE_LIMIT_CONFIG.BATCH_SIZE);
 
@@ -1494,24 +1942,11 @@ async function processAdsPhase(
 
       const campaignId = adsetInfo.campaign_id;
 
-      // Get ads for this adset
+      // Get ads for this adset with comprehensive fields
       const ads = await withRateLimitRetry(
         async () => {
           const adset = new AdSet(adsetId);
-          return adset.getAds(
-            [
-              "name",
-              "status",
-              "configured_status",
-              "effective_status",
-              "creative",
-              "tracking_specs",
-              "conversion_specs",
-              "created_time",
-              "updated_time",
-            ],
-            { limit: 50 }
-          );
+          return adset.getAds(adFields, { limit: 50 });
         },
         {
           accountId,
@@ -1533,20 +1968,60 @@ async function processAdsPhase(
         }
 
         try {
-          // Skip insights if running low on time
+          console.log(`\n--- Processing ad ${ad.id} ---`);
+          console.log(`Ad name: ${ad.name}`);
+          console.log(`Ad status: ${ad.status}`);
+
+          // Get insights for this ad if we have time
           let adInsights = null;
           if (getRemainingTime(startTime) > 10000) {
-            // Only get insights if we have more than 10 seconds
+            console.log(`🔍 Getting insights for ad ${ad.id}...`);
             adInsights = await getInsights(
               ad as InsightCapableEntity,
               supabase,
               accountId,
               timeframe
             );
+            console.log(`📊 Ad insights retrieved for ${ad.id}`);
           } else {
-            console.log("Skipping ad insights due to time constraints");
+            console.log("⏰ Skipping ad insights due to time constraints");
           }
 
+          // Extract creative ID and fetch creative details
+          let creativeDetails = null;
+          let creativeId = null;
+          let creativeType = "UNKNOWN";
+          let assetFeedSpec = null;
+
+          if (ad.creative && ad.creative.id) {
+            creativeId = ad.creative.id;
+            console.log(`🎨 Found creative ID: ${creativeId}`);
+
+            // Fetch creative details with retry
+            creativeDetails = await fetchCreativeWithRetry(creativeId);
+
+            if (creativeDetails) {
+              console.log(`✅ Creative details fetched for ${creativeId}`);
+              creativeType = determineCreativeType(creativeDetails, ad);
+              assetFeedSpec =
+                creativeDetails.asset_feed_spec ||
+                ad.creative.asset_feed_spec ||
+                null;
+            } else {
+              console.log(
+                `⚠️ Could not fetch creative details for ${creativeId}, using fallback`
+              );
+              creativeType = determineCreativeType(null, ad);
+              assetFeedSpec = ad.creative.asset_feed_spec || null;
+            }
+          } else {
+            console.log(`⚠️ No creative ID found for ad ${ad.id}`);
+            creativeType = determineCreativeType(null, ad);
+          }
+
+          console.log(`🎭 Determined creative type: ${creativeType}`);
+
+          // Create comprehensive ad data structure
           const adData = {
             ad_id: ad.id,
             ad_set_id: adsetId,
@@ -1557,8 +2032,38 @@ async function processAdsPhase(
             configured_status: ad.configured_status || null,
             effective_status: ad.effective_status || null,
             creative: ad.creative || null,
+            creative_id: creativeId,
+            creative_type: creativeType,
+            asset_feed_spec: assetFeedSpec,
+            object_story_spec:
+              creativeDetails?.object_story_spec ||
+              ad.creative?.object_story_spec ||
+              null,
             tracking_specs: ad.tracking_specs || null,
             conversion_specs: ad.conversion_specs || null,
+            tracking_and_conversion_specs:
+              ad.tracking_and_conversion_specs || null,
+            source_ad_id: ad.source_ad_id || null,
+            recommendations: ad.recommendations || null,
+            issues_info: ad.issues_info || null,
+            engagement_audience: ad.engagement_audience || null,
+            preview_url: ad.preview_url || null,
+            template_url:
+              ad.template_url || creativeDetails?.template_url || null,
+            thumbnail_url:
+              ad.thumbnail_url || creativeDetails?.thumbnail_url || null,
+            image_url: creativeDetails?.image_url || null,
+            video_id: creativeDetails?.video_id || null,
+            instagram_permalink_url:
+              ad.instagram_permalink_url ||
+              creativeDetails?.instagram_permalink_url ||
+              null,
+            effective_object_story_id:
+              ad.effective_object_story_id ||
+              creativeDetails?.effective_object_story_id ||
+              null,
+            url_tags: ad.url_tags || creativeDetails?.url_tags || null,
+            // Insights data
             impressions: safeParseInt(adInsights?.impressions),
             clicks: safeParseInt(adInsights?.clicks),
             reach: safeParseInt(adInsights?.reach),
@@ -1583,12 +2088,14 @@ async function processAdsPhase(
             updated_at: new Date().toISOString(),
           };
 
-          console.log(`Attempting to store ad ${ad.id} with data:`, {
+          console.log(`💾 Attempting to store ad ${ad.id} with data:`, {
             ad_id: adData.ad_id,
             ad_set_id: adData.ad_set_id,
             campaign_id: adData.campaign_id,
             name: adData.name,
             status: adData.status,
+            creative_id: adData.creative_id,
+            creative_type: adData.creative_type,
           });
 
           const { error: adError } = await supabase
@@ -1599,15 +2106,21 @@ async function processAdsPhase(
             });
 
           if (adError) {
-            console.error(`Error storing ad ${ad.id}:`, adError);
+            console.error(`❌ Error storing ad ${ad.id}:`, adError);
             console.error(
               `Ad data that failed:`,
               JSON.stringify(adData, null, 2)
             );
-            // Continue processing other ads even if one fails
+            totalErrors++;
           } else {
             processedAds.push(adData);
-            console.log(`Successfully stored ad ${ad.id}`);
+            console.log(`✅ Successfully stored ad ${ad.id}`);
+
+            // Save ad engagement metrics if we have insights
+            if (adInsights) {
+              const today = new Date().toISOString().split("T")[0];
+              await saveAdEngagementMetrics(ad.id, adInsights, today);
+            }
           }
 
           await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
@@ -1626,7 +2139,9 @@ async function processAdsPhase(
     }
   }
 
+  console.log(`\n=== ADS PHASE SUMMARY ===`);
   console.log(`Processed ${processedAds.length} ads`);
+  console.log(`Total errors: ${totalErrors}`);
 
   // Determine next action
   const totalProcessed = adsetsToProcess.length;
