@@ -475,12 +475,12 @@ async function getInsights(
   );
 }
 
-// Helper function to fetch creative details with retry mechanism
+// Helper function to fetch creative details with retry mechanism and FORCE asset_feed_spec
 async function fetchCreativeWithRetry(
   creativeId: string,
   supabase: SupabaseClient,
   accountId: string,
-  maxRetries = 3
+  maxRetries = 5 // Increased retries for critical data
 ): Promise<any> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -488,9 +488,9 @@ async function fetchCreativeWithRetry(
         `🎨 Fetching creative ${creativeId} (attempt ${attempt}/${maxRetries})`
       );
 
-      const creativeObj = new AdCreative(creativeId);
       const creative = await withRateLimitRetry(
         async () => {
+          const creativeObj = new AdCreative(creativeId);
           return creativeObj.read([
             "id",
             "name",
@@ -519,6 +519,74 @@ async function fetchCreativeWithRetry(
       );
 
       console.log(`✅ Successfully fetched creative ${creativeId}`);
+
+      // CRITICAL: If we have creative data but no asset_feed_spec, create fallback
+      if (creative && !creative.asset_feed_spec) {
+        console.log(
+          `⚠️ Creative ${creativeId} missing asset_feed_spec, creating fallback...`
+        );
+
+        // Create fallback asset_feed_spec from available data
+        let fallbackAssetFeedSpec = null;
+
+        if (creative.object_story_spec?.link_data) {
+          const linkData = creative.object_story_spec.link_data;
+          fallbackAssetFeedSpec = {
+            _fallback_source: "OBJECT_STORY_SPEC",
+            ...(linkData.video_id && {
+              videos: [{ video_id: linkData.video_id }],
+            }),
+            ...(linkData.image_hash && {
+              images: [{ image_hash: linkData.image_hash }],
+            }),
+            ...(linkData.picture && {
+              images: [{ picture: linkData.picture }],
+            }),
+            ...(linkData.call_to_action && {
+              call_to_action: linkData.call_to_action,
+            }),
+            ...(linkData.description && {
+              description: linkData.description,
+            }),
+            ...(linkData.link && {
+              link_url: linkData.link,
+            }),
+          };
+        } else if (creative.video_id) {
+          fallbackAssetFeedSpec = {
+            _fallback_source: "VIDEO_ID",
+            videos: [
+              {
+                video_id: creative.video_id,
+                ...(creative.thumbnail_url && {
+                  thumbnail_url: creative.thumbnail_url,
+                }),
+              },
+            ],
+          };
+        } else if (creative.image_url) {
+          fallbackAssetFeedSpec = {
+            _fallback_source: "IMAGE_URL",
+            images: [{ url: creative.image_url }],
+          };
+        }
+
+        if (fallbackAssetFeedSpec) {
+          creative.asset_feed_spec = fallbackAssetFeedSpec;
+          console.log(
+            `✅ Created fallback asset_feed_spec for creative ${creativeId}`
+          );
+        } else {
+          console.error(
+            `❌ CRITICAL: Could not create asset_feed_spec for creative ${creativeId}`
+          );
+          creative.asset_feed_spec = {
+            _fallback_source: "FAILED_TO_EXTRACT",
+            error: "No extractable asset data found",
+          };
+        }
+      }
+
       return creative;
     } catch (error: any) {
       console.error(
@@ -533,21 +601,43 @@ async function fetchCreativeWithRetry(
         error.response?.error?.message?.includes("not found")
       ) {
         console.log(`🗑️ Creative ${creativeId} appears to be deleted`);
-        return null; // Don't retry for deleted creatives
+        return {
+          _deleted: true,
+          asset_feed_spec: {
+            _fallback_source: "DELETED_CREATIVE",
+            error: "Creative was deleted",
+          },
+        };
       }
 
       if (attempt >= maxRetries) {
         console.error(
-          `❌ All retry attempts failed for creative ${creativeId}`
+          `❌ All retry attempts failed for creative ${creativeId}, creating emergency fallback`
         );
-        return null;
+        return {
+          _fetch_failed: true,
+          asset_feed_spec: {
+            _fallback_source: "FETCH_FAILED_EMERGENCY",
+            error: error.response?.error?.message || "Unknown fetch error",
+            creative_id: creativeId,
+          },
+        };
       }
 
       // Wait before retry with exponential backoff
       await delay(1000 * Math.pow(2, attempt - 1));
     }
   }
-  return null;
+
+  // This should never be reached, but just in case
+  return {
+    _emergency_fallback: true,
+    asset_feed_spec: {
+      _fallback_source: "EMERGENCY_FALLBACK",
+      error: "Unexpected code path",
+      creative_id: creativeId,
+    },
+  };
 }
 
 // Helper function to determine creative type with comprehensive fallbacks
@@ -597,33 +687,38 @@ async function saveAdEngagementMetrics(
   insights: any,
   date: string
 ) {
-  if (!insights) return;
-
   try {
-    // Extract engagement metrics from insights with proper field mapping
+    console.log(`📊 Processing engagement metrics for ad ${adId}...`);
+
+    // ALWAYS create a record, even if insights are null
     const engagementData = {
       ad_id: adId,
       date: date,
-      inline_link_clicks: safeParseInt(insights.inline_link_clicks),
-      inline_post_engagement: safeParseInt(insights.inline_post_engagement),
+      // If no insights, set all metrics to null but still create the record
+      inline_link_clicks: insights
+        ? safeParseInt(insights.inline_link_clicks)
+        : null,
+      inline_post_engagement: insights
+        ? safeParseInt(insights.inline_post_engagement)
+        : null,
       // Video metrics
-      video_30s_watched: insights.video_30_sec_watched_actions
+      video_30s_watched: insights?.video_30_sec_watched_actions
         ? safeParseInt(insights.video_30_sec_watched_actions[0]?.value)
         : null,
-      video_25_percent_watched: insights.video_p25_watched_actions
+      video_25_percent_watched: insights?.video_p25_watched_actions
         ? safeParseInt(insights.video_p25_watched_actions[0]?.value)
         : null,
-      video_50_percent_watched: insights.video_p50_watched_actions
+      video_50_percent_watched: insights?.video_p50_watched_actions
         ? safeParseInt(insights.video_p50_watched_actions[0]?.value)
         : null,
-      video_75_percent_watched: insights.video_p75_watched_actions
+      video_75_percent_watched: insights?.video_p75_watched_actions
         ? safeParseInt(insights.video_p75_watched_actions[0]?.value)
         : null,
-      video_95_percent_watched: insights.video_p95_watched_actions
+      video_95_percent_watched: insights?.video_p95_watched_actions
         ? safeParseInt(insights.video_p95_watched_actions[0]?.value)
         : null,
       // Engagement metrics from actions
-      page_engagement: insights.actions?.find(
+      page_engagement: insights?.actions?.find(
         (a: any) => a.action_type === "page_engagement"
       )?.value
         ? safeParseInt(
@@ -632,7 +727,7 @@ async function saveAdEngagementMetrics(
             ).value
           )
         : null,
-      post_engagement: insights.actions?.find(
+      post_engagement: insights?.actions?.find(
         (a: any) => a.action_type === "post_engagement"
       )?.value
         ? safeParseInt(
@@ -641,7 +736,7 @@ async function saveAdEngagementMetrics(
             ).value
           )
         : null,
-      post_comments: insights.actions?.find(
+      post_comments: insights?.actions?.find(
         (a: any) => a.action_type === "comment"
       )?.value
         ? safeParseInt(
@@ -649,12 +744,12 @@ async function saveAdEngagementMetrics(
           )
         : null,
       // Video view metrics
-      two_sec_video_views: insights.video_continuous_2_sec_watched_actions
+      two_sec_video_views: insights?.video_continuous_2_sec_watched_actions
         ? safeParseInt(
             insights.video_continuous_2_sec_watched_actions[0]?.value
           )
         : null,
-      three_sec_video_views: insights.actions?.find(
+      three_sec_video_views: insights?.actions?.find(
         (a: any) => a.action_type === "video_view"
       )?.value
         ? safeParseInt(
@@ -662,11 +757,11 @@ async function saveAdEngagementMetrics(
               .value
           )
         : null,
-      thruplays: insights.video_thruplay_watched_actions
+      thruplays: insights?.video_thruplay_watched_actions
         ? safeParseInt(insights.video_thruplay_watched_actions[0]?.value)
         : null,
       // Cost metrics from cost_per_action_type
-      cost_per_link_click: insights.cost_per_action_type?.find(
+      cost_per_link_click: insights?.cost_per_action_type?.find(
         (c: any) => c.action_type === "link_click"
       )?.value
         ? safeParseFloat(
@@ -675,7 +770,7 @@ async function saveAdEngagementMetrics(
             ).value
           )
         : null,
-      cost_per_post_engagement: insights.cost_per_action_type?.find(
+      cost_per_post_engagement: insights?.cost_per_action_type?.find(
         (c: any) => c.action_type === "post_engagement"
       )?.value
         ? safeParseFloat(
@@ -684,7 +779,7 @@ async function saveAdEngagementMetrics(
             ).value
           )
         : null,
-      cost_per_page_engagement: insights.cost_per_action_type?.find(
+      cost_per_page_engagement: insights?.cost_per_action_type?.find(
         (c: any) => c.action_type === "page_engagement"
       )?.value
         ? safeParseFloat(
@@ -693,7 +788,7 @@ async function saveAdEngagementMetrics(
             ).value
           )
         : null,
-      cost_per_thruplay: insights.cost_per_action_type?.find(
+      cost_per_thruplay: insights?.cost_per_action_type?.find(
         (c: any) => c.action_type === "video_thruplay_watched"
       )?.value
         ? safeParseFloat(
@@ -702,7 +797,7 @@ async function saveAdEngagementMetrics(
             ).value
           )
         : null,
-      cost_per_2sec_view: insights.cost_per_action_type?.find(
+      cost_per_2sec_view: insights?.cost_per_action_type?.find(
         (c: any) => c.action_type === "video_continuous_2_sec_watched"
       )?.value
         ? safeParseFloat(
@@ -711,7 +806,7 @@ async function saveAdEngagementMetrics(
             ).value
           )
         : null,
-      cost_per_3sec_view: insights.cost_per_action_type?.find(
+      cost_per_3sec_view: insights?.cost_per_action_type?.find(
         (c: any) => c.action_type === "video_view"
       )?.value
         ? safeParseFloat(
@@ -721,27 +816,36 @@ async function saveAdEngagementMetrics(
           )
         : null,
       // Calculated metrics
-      avg_watch_time_seconds: insights.video_avg_time_watched_actions
+      avg_watch_time_seconds: insights?.video_avg_time_watched_actions
         ? safeParseFloat(insights.video_avg_time_watched_actions[0]?.value)
         : null,
       // VTR and Hook Rate (calculated)
       vtr_percentage:
-        insights.video_p25_watched_actions && insights.impressions
+        insights?.video_p25_watched_actions && insights?.impressions
           ? (safeParseInt(insights.video_p25_watched_actions[0]?.value) /
               safeParseInt(insights.impressions)) *
             100
           : null,
       hook_rate_percentage:
-        insights.video_continuous_2_sec_watched_actions && insights.impressions
+        insights?.video_continuous_2_sec_watched_actions &&
+        insights?.impressions
           ? (safeParseInt(
               insights.video_continuous_2_sec_watched_actions[0]?.value
             ) /
               safeParseInt(insights.impressions)) *
             100
           : null,
+      // Metadata
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
+
+    console.log(`📊 Engagement data prepared for ad ${adId}:`, {
+      insights_available: insights ? true : false,
+      inline_link_clicks: engagementData.inline_link_clicks,
+      video_30s_watched: engagementData.video_30s_watched,
+      thruplays: engagementData.thruplays,
+    });
 
     const { error: metricsError } = await supabase
       .from("ad_engagement_metrics")
@@ -755,14 +859,20 @@ async function saveAdEngagementMetrics(
         `❌ Error saving engagement metrics for ad ${adId}:`,
         metricsError
       );
+      throw metricsError; // Re-throw so caller can handle
     } else {
-      console.log(`✅ Saved engagement metrics for ad ${adId}`);
+      console.log(
+        `✅ Saved engagement metrics for ad ${adId} (insights: ${
+          insights ? "available" : "null"
+        })`
+      );
     }
   } catch (error) {
     console.error(
       `❌ Error processing engagement metrics for ad ${adId}:`,
       error
     );
+    throw error; // Re-throw so caller can handle
   }
 }
 
@@ -1351,7 +1461,7 @@ async function fetchData(
               console.log(`Ad name: ${ad.name}`);
               console.log(`Ad status: ${ad.status}`);
 
-              // Get insights for this ad
+              // Get insights for this ad - THIS IS CRITICAL FOR ENGAGEMENT METRICS
               const adInsights = await getInsights(
                 ad as InsightCapableEntity,
                 supabase,
@@ -1369,33 +1479,73 @@ async function fetchData(
                 creativeId = ad.creative.id;
                 console.log(`🎨 Found creative ID: ${creativeId}`);
 
-                // Fetch creative details with retry mechanism
+                // CRITICAL: Fetch creative details with FORCED asset_feed_spec
                 creativeDetails = await fetchCreativeWithRetry(
                   creativeId,
                   supabase,
                   accountId
                 );
 
+                // ALWAYS ensure we have asset_feed_spec when we have creative_id
                 if (creativeDetails) {
                   console.log(`✅ Creative details fetched for ${creativeId}`);
                   creativeType = determineCreativeType(creativeDetails, ad);
-                  assetFeedSpec =
-                    creativeDetails.asset_feed_spec ||
-                    ad.creative.asset_feed_spec ||
-                    null;
+
+                  // FORCE asset_feed_spec - this should NEVER be null if we have creative_id
+                  assetFeedSpec = creativeDetails.asset_feed_spec;
+
+                  if (!assetFeedSpec) {
+                    console.error(
+                      `❌ CRITICAL ERROR: No asset_feed_spec for creative ${creativeId}!`
+                    );
+                    // Create emergency fallback
+                    assetFeedSpec = {
+                      _fallback_source: "EMERGENCY_CREATIVE_FALLBACK",
+                      error: "Creative details fetched but no asset_feed_spec",
+                      creative_id: creativeId,
+                      ad_id: ad.id,
+                    };
+                  }
                 } else {
-                  console.log(
-                    `⚠️ Could not fetch creative details for ${creativeId}, using fallback`
+                  console.error(
+                    `❌ CRITICAL ERROR: Could not fetch creative details for ${creativeId}!`
                   );
-                  creativeType = determineCreativeType(null, ad);
-                  assetFeedSpec = ad.creative.asset_feed_spec || null;
+                  // This should not happen with our new fetchCreativeWithRetry function
+                  creativeType = "FETCH_FAILED";
+                  assetFeedSpec = {
+                    _fallback_source: "CRITICAL_FETCH_FAILURE",
+                    error: "fetchCreativeWithRetry returned null",
+                    creative_id: creativeId,
+                    ad_id: ad.id,
+                  };
                 }
               } else {
                 console.log(`⚠️ No creative ID found for ad ${ad.id}`);
                 creativeType = determineCreativeType(null, ad);
+                // No creative_id means no asset_feed_spec needed
+                assetFeedSpec = null;
               }
 
               console.log(`🎭 Determined creative type: ${creativeType}`);
+              console.log(
+                `📋 Asset feed spec status: ${
+                  assetFeedSpec ? "PRESENT" : "NULL"
+                }`
+              );
+
+              // CRITICAL VALIDATION: If we have creative_id, we MUST have asset_feed_spec
+              if (creativeId && !assetFeedSpec) {
+                console.error(
+                  `❌ VALIDATION FAILED: creative_id ${creativeId} but no asset_feed_spec!`
+                );
+                assetFeedSpec = {
+                  _fallback_source: "VALIDATION_FAILURE",
+                  error:
+                    "Validation failed - creative_id present but no asset_feed_spec",
+                  creative_id: creativeId,
+                  ad_id: ad.id,
+                };
+              }
 
               // Create comprehensive ad data structure
               const adData = {
@@ -1408,7 +1558,7 @@ async function fetchData(
                 creative: ad.creative || null,
                 creative_id: creativeId,
                 creative_type: creativeType,
-                asset_feed_spec: assetFeedSpec,
+                asset_feed_spec: assetFeedSpec, // This should ALWAYS be present if creative_id exists
                 object_story_spec:
                   creativeDetails?.object_story_spec ||
                   ad.creative?.object_story_spec ||
@@ -1478,16 +1628,26 @@ async function fetchData(
               } else {
                 console.log(`✅ Successfully stored ad ${ad.id}`);
                 processedAds.push(adData);
+              }
 
-                // Save ad engagement metrics if we have insights
-                if (adInsights) {
-                  await saveAdEngagementMetrics(
-                    supabase,
-                    ad.id,
-                    adInsights,
-                    today
-                  );
-                }
+              // CRITICAL: ALWAYS save ad engagement metrics for EVERY ad
+              console.log(`📊 Saving engagement metrics for ad ${ad.id}...`);
+              try {
+                await saveAdEngagementMetrics(
+                  supabase,
+                  ad.id,
+                  adInsights,
+                  today
+                );
+                console.log(
+                  `✅ Successfully saved engagement metrics for ad ${ad.id}`
+                );
+              } catch (engagementError) {
+                console.error(
+                  `❌ Error saving engagement metrics for ad ${ad.id}:`,
+                  engagementError
+                );
+                // Don't fail the entire ad processing if engagement metrics fail
               }
 
               // Add delay between ad processing
