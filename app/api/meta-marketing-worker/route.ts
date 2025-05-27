@@ -57,12 +57,12 @@ const RATE_LIMIT_CONFIG = {
     WRITE: 3,
     INSIGHTS: 2,
   },
-  BATCH_SIZE: 25, // Increased from 5 to 25 for better throughput
-  MIN_DELAY: 200, // Reduced delay for faster processing
-  BURST_DELAY: 500, // Reduced burst delay
-  INSIGHTS_DELAY: 800, // Reduced insights delay
+  BATCH_SIZE: 100, // Significantly increased from 25 to 100 for much better throughput
+  MIN_DELAY: 100, // Reduced delay for faster processing
+  BURST_DELAY: 300, // Reduced burst delay
+  INSIGHTS_DELAY: 600, // Reduced insights delay
   MAX_PROCESSING_TIME: 80000, // Increased to 80 seconds for more data processing
-  SAFETY_BUFFER: 5000, // Reduced to 5 second safety buffer
+  SAFETY_BUFFER: 5000, // Reduced safety buffer for more processing time
 };
 
 // Meta API configuration
@@ -294,10 +294,29 @@ function getLast6MonthsDateRange() {
   const endDate = new Date();
   const startDate = new Date();
   startDate.setMonth(startDate.getMonth() - 6);
-  return {
+
+  // Ensure we don't go beyond Facebook's data retention limits
+  const minDate = new Date();
+  minDate.setFullYear(minDate.getFullYear() - 2); // Facebook keeps data for ~2 years
+
+  if (startDate < minDate) {
+    console.log(
+      `⚠️ Adjusting start date from ${
+        startDate.toISOString().split("T")[0]
+      } to ${
+        minDate.toISOString().split("T")[0]
+      } (Facebook data retention limit)`
+    );
+    startDate.setTime(minDate.getTime());
+  }
+
+  const result = {
     since: startDate.toISOString().split("T")[0],
     until: endDate.toISOString().split("T")[0],
   };
+
+  console.log(`📅 6-month date range: ${result.since} to ${result.until}`);
+  return result;
 }
 
 function getDateRangeForTimeframe(timeframe: string) {
@@ -348,7 +367,7 @@ async function withRateLimitRetry<T>(
   }
 }
 
-// Get insights helper
+// Get insights helper with improved error handling and fallback strategies
 async function getInsights(
   entity: InsightCapableEntity,
   supabase: any,
@@ -362,61 +381,187 @@ async function getInsights(
       console.log(
         `🔍 Fetching insights for entity ${entity.id} with timeframe ${timeframe}`
       );
+      console.log(`📅 Date range: ${dateRange.since} to ${dateRange.until}`);
 
-      const insights = await entity.getInsights(
-        [
-          "impressions",
-          "clicks",
-          "reach",
-          "spend",
-          "cpc",
-          "cpm",
-          "ctr",
-          "frequency",
-          "objective",
-          "action_values",
-          "actions",
-          "cost_per_action_type",
-          "cost_per_unique_click",
-          "outbound_clicks",
-          "outbound_clicks_ctr",
-          "website_ctr",
-          "website_purchase_roas",
-          "inline_link_clicks",
-          "inline_post_engagement",
-          "video_30_sec_watched_actions",
-          "video_p25_watched_actions",
-          "video_p50_watched_actions",
-          "video_p75_watched_actions",
-          "video_p95_watched_actions",
-          "video_p100_watched_actions",
-          "video_avg_time_watched_actions",
-          "video_play_actions",
-          "video_thruplay_watched_actions",
-          "video_continuous_2_sec_watched_actions",
-        ],
-        {
-          time_range: dateRange,
-          // CRITICAL FIX: Don't specify level for individual entity insights
-          // The level parameter is only for account-level insights aggregation
-          breakdowns: [],
+      try {
+        // First attempt: Try with the requested timeframe
+        const insights = await entity.getInsights(
+          [
+            "impressions",
+            "clicks",
+            "reach",
+            "spend",
+            "cpc",
+            "cpm",
+            "ctr",
+            "frequency",
+            "objective",
+            "action_values",
+            "actions",
+            "cost_per_action_type",
+            "cost_per_unique_click",
+            "outbound_clicks",
+            "outbound_clicks_ctr",
+            "website_ctr",
+            "website_purchase_roas",
+            "inline_link_clicks",
+            "inline_post_engagement",
+            "video_30_sec_watched_actions",
+            "video_p25_watched_actions",
+            "video_p50_watched_actions",
+            "video_p75_watched_actions",
+            "video_p95_watched_actions",
+            "video_p100_watched_actions",
+            "video_avg_time_watched_actions",
+            "video_play_actions",
+            "video_thruplay_watched_actions",
+            "video_continuous_2_sec_watched_actions",
+          ],
+          {
+            time_range: dateRange,
+            // CRITICAL FIX: Don't specify level for individual entity insights
+            // The level parameter is only for account-level insights aggregation
+            breakdowns: [],
+          }
+        );
+
+        const result = (insights?.[0] as InsightResult) || null;
+
+        if (result) {
+          console.log(`✅ Insights fetched successfully for ${entity.id}:`, {
+            impressions: result.impressions,
+            clicks: result.clicks,
+            spend: result.spend,
+            actions_count: result.actions?.length || 0,
+          });
+          return result;
+        } else {
+          console.log(
+            `⚠️ No insights data for primary timeframe, trying fallback...`
+          );
+
+          // FALLBACK 1: Try with last 30 days if 6-month failed
+          if (timeframe === "6-month") {
+            console.log(`🔄 Trying 30-day fallback for ${entity.id}...`);
+            const fallbackRange = {
+              since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+                .toISOString()
+                .split("T")[0],
+              until: new Date().toISOString().split("T")[0],
+            };
+
+            const fallbackInsights = await entity.getInsights(
+              [
+                "impressions",
+                "clicks",
+                "reach",
+                "spend",
+                "actions",
+                "cost_per_action_type",
+                "inline_link_clicks",
+                "inline_post_engagement",
+                "video_30_sec_watched_actions",
+                "video_p25_watched_actions",
+                "video_thruplay_watched_actions",
+                "video_continuous_2_sec_watched_actions",
+              ],
+              {
+                time_range: fallbackRange,
+                breakdowns: [],
+              }
+            );
+
+            const fallbackResult =
+              (fallbackInsights?.[0] as InsightResult) || null;
+            if (fallbackResult) {
+              console.log(
+                `✅ Fallback insights (30-day) fetched for ${entity.id}`
+              );
+              return fallbackResult;
+            }
+          }
+
+          // FALLBACK 2: Try with last 7 days
+          console.log(`🔄 Trying 7-day fallback for ${entity.id}...`);
+          const weekRange = {
+            since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+              .toISOString()
+              .split("T")[0],
+            until: new Date().toISOString().split("T")[0],
+          };
+
+          const weekInsights = await entity.getInsights(
+            [
+              "impressions",
+              "clicks",
+              "reach",
+              "spend",
+              "actions",
+              "inline_link_clicks",
+              "inline_post_engagement",
+            ],
+            {
+              time_range: weekRange,
+              breakdowns: [],
+            }
+          );
+
+          const weekResult = (weekInsights?.[0] as InsightResult) || null;
+          if (weekResult) {
+            console.log(
+              `✅ Fallback insights (7-day) fetched for ${entity.id}`
+            );
+            return weekResult;
+          }
+
+          console.log(
+            `⚠️ No insights data available for ${entity.id} in any timeframe`
+          );
+          return null;
         }
-      );
+      } catch (insightsError: any) {
+        console.error(
+          `❌ Error fetching insights for ${entity.id}:`,
+          insightsError
+        );
 
-      const result = (insights?.[0] as InsightResult) || null;
+        // If it's a permissions or data availability error, try a simpler request
+        if (
+          insightsError?.response?.error?.code === 100 ||
+          insightsError?.response?.error?.message?.includes("No data available")
+        ) {
+          console.log(
+            `🔄 Trying simplified insights request for ${entity.id}...`
+          );
 
-      if (result) {
-        console.log(`✅ Insights fetched successfully for ${entity.id}:`, {
-          impressions: result.impressions,
-          clicks: result.clicks,
-          spend: result.spend,
-          actions_count: result.actions?.length || 0,
-        });
-      } else {
-        console.log(`⚠️ No insights data available for ${entity.id}`);
+          try {
+            const simpleInsights = await entity.getInsights(
+              ["impressions", "clicks", "spend"],
+              {
+                time_range: {
+                  since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+                    .toISOString()
+                    .split("T")[0],
+                  until: new Date().toISOString().split("T")[0],
+                },
+              }
+            );
+
+            const simpleResult = (simpleInsights?.[0] as InsightResult) || null;
+            if (simpleResult) {
+              console.log(`✅ Simplified insights fetched for ${entity.id}`);
+              return simpleResult;
+            }
+          } catch (simpleError) {
+            console.error(
+              `❌ Even simplified insights failed for ${entity.id}:`,
+              simpleError
+            );
+          }
+        }
+
+        return null;
       }
-
-      return result;
     },
     {
       accountId,
@@ -852,7 +997,7 @@ async function processCampaignsPhase(
 
     // Get campaigns with comprehensive fields
     const campaignOptions: any = {
-      limit: 50, // Increased from BATCH_SIZE to fetch more campaigns per request
+      limit: 100, // Increased to 100 to match ads and adsets limits for better throughput
     };
 
     // Only add after parameter if it's not empty and looks like a valid cursor
@@ -1349,7 +1494,7 @@ async function processAdsetsPhase(
       const adsetsResponse = await withRateLimitRetry(
         async () => {
           const campaign = new Campaign(campaignId);
-          return campaign.getAdSets(adsetFields, { limit: 50 }); // Increased limit
+          return campaign.getAdSets(adsetFields, { limit: 100 }); // Increased to 100 for better throughput
         },
         {
           accountId,
