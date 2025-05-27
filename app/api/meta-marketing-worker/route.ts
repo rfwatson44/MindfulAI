@@ -57,12 +57,12 @@ const RATE_LIMIT_CONFIG = {
     WRITE: 3,
     INSIGHTS: 2,
   },
-  BATCH_SIZE: 5, // Further reduced batch size for more aggressive chunking
-  MIN_DELAY: 500, // Reduced delay for faster processing
-  BURST_DELAY: 1000, // Reduced burst delay
-  INSIGHTS_DELAY: 1500, // Reduced insights delay
-  MAX_PROCESSING_TIME: 60000, // 60 seconds to stay well under Vercel limit
-  SAFETY_BUFFER: 10000, // 10 second safety buffer
+  BATCH_SIZE: 25, // Increased from 5 to 25 for better throughput
+  MIN_DELAY: 200, // Reduced delay for faster processing
+  BURST_DELAY: 500, // Reduced burst delay
+  INSIGHTS_DELAY: 800, // Reduced insights delay
+  MAX_PROCESSING_TIME: 80000, // Increased to 80 seconds for more data processing
+  SAFETY_BUFFER: 5000, // Reduced to 5 second safety buffer
 };
 
 // Meta API configuration
@@ -359,6 +359,10 @@ async function getInsights(
     async () => {
       const dateRange = getDateRangeForTimeframe(timeframe);
 
+      console.log(
+        `🔍 Fetching insights for entity ${entity.id} with timeframe ${timeframe}`
+      );
+
       const insights = await entity.getInsights(
         [
           "impressions",
@@ -393,18 +397,32 @@ async function getInsights(
         ],
         {
           time_range: dateRange,
-          level: "ad",
+          // CRITICAL FIX: Don't specify level for individual entity insights
+          // The level parameter is only for account-level insights aggregation
           breakdowns: [],
         }
       );
 
-      return (insights?.[0] as InsightResult) || null;
+      const result = (insights?.[0] as InsightResult) || null;
+
+      if (result) {
+        console.log(`✅ Insights fetched successfully for ${entity.id}:`, {
+          impressions: result.impressions,
+          clicks: result.clicks,
+          spend: result.spend,
+          actions_count: result.actions?.length || 0,
+        });
+      } else {
+        console.log(`⚠️ No insights data available for ${entity.id}`);
+      }
+
+      return result;
     },
     {
       accountId,
       endpoint: "insights",
       callType: "READ",
-      points: RATE_LIMIT_CONFIG.POINTS.READ,
+      points: RATE_LIMIT_CONFIG.POINTS.INSIGHTS, // Use INSIGHTS points instead of READ
       supabase,
     }
   );
@@ -834,7 +852,7 @@ async function processCampaignsPhase(
 
     // Get campaigns with comprehensive fields
     const campaignOptions: any = {
-      limit: RATE_LIMIT_CONFIG.BATCH_SIZE,
+      limit: 50, // Increased from BATCH_SIZE to fetch more campaigns per request
     };
 
     // Only add after parameter if it's not empty and looks like a valid cursor
@@ -908,19 +926,35 @@ async function processCampaignsPhase(
       await updateJobStatus(supabase, requestId, "processing", progress);
 
       try {
-        // Get insights for this campaign if we have time
+        // Get insights for this campaign - ALWAYS try to fetch insights
         let campaignInsights = null;
-        if (getRemainingTime(startTime) > 15000) {
-          console.log(`🔍 Getting insights for campaign ${campaign.id}...`);
+        console.log(`🔍 Getting insights for campaign ${campaign.id}...`);
+
+        try {
           campaignInsights = await getInsights(
             campaign as InsightCapableEntity,
             supabase,
             accountId,
             timeframe
           );
-          console.log(`📊 Campaign insights retrieved for ${campaign.id}`);
-        } else {
-          console.log("⏰ Skipping campaign insights due to time constraints");
+
+          if (campaignInsights) {
+            console.log(`✅ Campaign insights retrieved for ${campaign.id}:`, {
+              impressions: campaignInsights.impressions,
+              clicks: campaignInsights.clicks,
+              spend: campaignInsights.spend,
+              actions: campaignInsights.actions?.length || 0,
+            });
+          } else {
+            console.log(`⚠️ No insights data for campaign ${campaign.id}`);
+          }
+        } catch (insightsError) {
+          console.error(
+            `❌ Error fetching insights for campaign ${campaign.id}:`,
+            insightsError
+          );
+          // Continue processing even if insights fail
+          campaignInsights = null;
         }
 
         // Create comprehensive campaign data structure with all database fields
@@ -1314,17 +1348,8 @@ async function processAdsetsPhase(
       // Get adsets for this campaign with comprehensive fields
       const adsetsResponse = await withRateLimitRetry(
         async () => {
-          console.log(
-            `Making API call to get adsets for campaign ${campaignId}`
-          );
-          console.log(`API call parameters:`, {
-            fields: adsetFields,
-            options: { limit: 50 },
-          });
-
-          const result = campaign.getAdSets(adsetFields, { limit: 50 });
-          console.log(`API call completed for campaign ${campaignId}`);
-          return result;
+          const campaign = new Campaign(campaignId);
+          return campaign.getAdSets(adsetFields, { limit: 50 }); // Increased limit
         },
         {
           accountId,
@@ -1349,9 +1374,15 @@ async function processAdsetsPhase(
           console.log(
             `📊 Response has data property with ${adsets.length} items`
           );
+        } else if (responseObj.length !== undefined) {
+          adsets = Array.from(responseObj);
+          console.log(`📊 Response is array-like with ${adsets.length} items`);
         } else {
-          console.log(`📊 Response is object but no data property found`);
-          console.log(`📊 Response keys:`, Object.keys(responseObj));
+          console.log(
+            `📊 Response object structure:`,
+            Object.keys(responseObj)
+          );
+          adsets = [];
         }
       } else {
         console.log(
@@ -1389,19 +1420,35 @@ async function processAdsetsPhase(
         console.log(`Adset status: ${adset.status}`);
 
         try {
-          // Get insights for this adset if we have time
+          // Get insights for this adset - ALWAYS try to fetch insights
           let adsetInsights = null;
-          if (getRemainingTime(startTime) > 15000) {
-            console.log(`🔍 Getting insights for adset ${adset.id}...`);
+          console.log(`🔍 Getting insights for adset ${adset.id}...`);
+
+          try {
             adsetInsights = await getInsights(
               adset as InsightCapableEntity,
               supabase,
               accountId,
               timeframe
             );
-            console.log(`📊 Adset insights:`, adsetInsights);
-          } else {
-            console.log("⏰ Skipping adset insights due to time constraints");
+
+            if (adsetInsights) {
+              console.log(`✅ Adset insights retrieved for ${adset.id}:`, {
+                impressions: adsetInsights.impressions,
+                clicks: adsetInsights.clicks,
+                spend: adsetInsights.spend,
+                actions: adsetInsights.actions?.length || 0,
+              });
+            } else {
+              console.log(`⚠️ No insights data for adset ${adset.id}`);
+            }
+          } catch (insightsError) {
+            console.error(
+              `❌ Error fetching insights for adset ${adset.id}:`,
+              insightsError
+            );
+            // Continue processing even if insights fail
+            adsetInsights = null;
           }
 
           // Create comprehensive adset data structure with all database fields
@@ -1870,6 +1917,18 @@ async function processAdsPhase(
   ) {
     try {
       console.log(`📊 Processing engagement metrics for ad ${adId}...`);
+      console.log(`📊 Raw insights data:`, {
+        insights_available: insights ? true : false,
+        impressions: insights?.impressions,
+        clicks: insights?.clicks,
+        spend: insights?.spend,
+        inline_link_clicks: insights?.inline_link_clicks,
+        inline_post_engagement: insights?.inline_post_engagement,
+        actions_count: insights?.actions?.length || 0,
+        video_actions_count:
+          insights?.video_30_sec_watched_actions?.length || 0,
+        cost_per_action_count: insights?.cost_per_action_type?.length || 0,
+      });
 
       // ALWAYS create a record, even if insights are null
       const engagementData = {
@@ -2026,6 +2085,10 @@ async function processAdsPhase(
         inline_link_clicks: engagementData.inline_link_clicks,
         video_30s_watched: engagementData.video_30s_watched,
         thruplays: engagementData.thruplays,
+        page_engagement: engagementData.page_engagement,
+        post_engagement: engagementData.post_engagement,
+        vtr_percentage: engagementData.vtr_percentage,
+        hook_rate_percentage: engagementData.hook_rate_percentage,
       });
 
       const { error: metricsError } = await supabase
@@ -2105,7 +2168,7 @@ async function processAdsPhase(
       const ads = await withRateLimitRetry(
         async () => {
           const adset = new AdSet(adsetId);
-          return adset.getAds(adFields, { limit: 50 });
+          return adset.getAds(adFields, { limit: 100 }); // Increased limit for more ads
         },
         {
           accountId,
@@ -2131,19 +2194,35 @@ async function processAdsPhase(
           console.log(`Ad name: ${ad.name}`);
           console.log(`Ad status: ${ad.status}`);
 
-          // Get insights for this ad if we have time
+          // Get insights for this ad - ALWAYS try to fetch insights
           let adInsights = null;
-          if (getRemainingTime(startTime) > 10000) {
-            console.log(`🔍 Getting insights for ad ${ad.id}...`);
+          console.log(`🔍 Getting insights for ad ${ad.id}...`);
+
+          try {
             adInsights = await getInsights(
               ad as InsightCapableEntity,
               supabase,
               accountId,
               timeframe
             );
-            console.log(`📊 Ad insights retrieved for ${ad.id}`);
-          } else {
-            console.log("⏰ Skipping ad insights due to time constraints");
+
+            if (adInsights) {
+              console.log(`✅ Ad insights retrieved for ${ad.id}:`, {
+                impressions: adInsights.impressions,
+                clicks: adInsights.clicks,
+                spend: adInsights.spend,
+                actions: adInsights.actions?.length || 0,
+              });
+            } else {
+              console.log(`⚠️ No insights data for ad ${ad.id}`);
+            }
+          } catch (insightsError) {
+            console.error(
+              `❌ Error fetching insights for ad ${ad.id}:`,
+              insightsError
+            );
+            // Continue processing even if insights fail
+            adInsights = null;
           }
 
           // Extract creative ID and fetch creative details
