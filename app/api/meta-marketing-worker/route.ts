@@ -88,7 +88,14 @@ function getRemainingTime(startTime: number): number {
 }
 
 // Extended job payload for chunked processing
-interface ChunkedJobPayload extends MetaMarketingJobPayload {
+interface ChunkedJobPayload {
+  // Base properties from MetaMarketingJobPayload
+  accountId: string;
+  timeframe: string;
+  action: string;
+  userId?: string;
+  requestId: string;
+  // Extended properties for chunked processing
   phase?: string; // 'account' | 'campaigns' | 'adsets' | 'ads'
   campaignIds?: string[];
   adsetIds?: string[];
@@ -410,10 +417,11 @@ async function handler(request: Request) {
 
   try {
     console.log("=== QStash Worker Started ===");
-    console.log(
-      "Request headers:",
-      Object.fromEntries(request.headers.entries())
-    );
+    console.log("Request headers:", {
+      "content-type": request.headers.get("content-type"),
+      "x-request-id": request.headers.get("x-request-id"),
+      "user-agent": request.headers.get("user-agent"),
+    });
 
     const payload: ChunkedJobPayload = await request.json();
     console.log("Background job started with payload:", payload);
@@ -825,12 +833,21 @@ async function processCampaignsPhase(
     const account = new AdAccount(accountId);
 
     // Get campaigns with comprehensive fields
+    const campaignOptions: any = {
+      limit: RATE_LIMIT_CONFIG.BATCH_SIZE,
+    };
+
+    // Only add after parameter if it's not empty and looks like a valid cursor
+    if (after && after.trim() !== "") {
+      console.log(`Using pagination cursor: ${after}`);
+      campaignOptions.after = after;
+    } else {
+      console.log("Starting from the beginning (no cursor)");
+    }
+
     const campaigns = await withRateLimitRetry(
       async () => {
-        return account.getCampaigns(campaignFields, {
-          limit: RATE_LIMIT_CONFIG.BATCH_SIZE,
-          after: after,
-        });
+        return account.getCampaigns(campaignFields, campaignOptions);
       },
       {
         accountId,
@@ -848,15 +865,31 @@ async function processCampaignsPhase(
       // Check time limit frequently
       if (shouldCreateFollowUpJob(startTime)) {
         console.log(`Time limit reached after processing ${i} campaigns`);
-        // Create follow-up job with the next cursor
-        const nextAfter = campaigns[i]?.id || after;
+
+        // Get the proper next cursor from the campaigns object
+        let nextCursor = "";
+        try {
+          if (campaigns.hasNext && campaigns.hasNext()) {
+            // Try to get the next cursor from the campaigns object
+            const paging = campaigns.paging;
+            nextCursor = paging?.cursors?.after || "";
+            console.log(`Got next cursor from paging: ${nextCursor}`);
+          }
+        } catch (cursorError) {
+          console.warn(
+            "Could not get next cursor, will restart from beginning:",
+            cursorError
+          );
+          nextCursor = "";
+        }
+
         await createFollowUpJob({
           accountId,
           timeframe,
           action: "get24HourData",
           requestId,
           phase: "campaigns",
-          after: nextAfter,
+          after: nextCursor,
         });
         break;
       }
@@ -1003,22 +1036,40 @@ async function processCampaignsPhase(
     console.log(`Campaign IDs collected: ${campaignIds.length}`);
     console.log(`Campaign IDs: ${campaignIds.join(", ")}`);
 
-    // Determine next action
-    const hasMore = campaigns.length === RATE_LIMIT_CONFIG.BATCH_SIZE;
-    const nextAfter =
-      campaigns.length > 0 ? campaigns[campaigns.length - 1].id : after;
+    // Determine next action using proper pagination
+    let hasMore = false;
+    let nextCursor = "";
 
-    if (hasMore && !shouldCreateFollowUpJob(startTime)) {
+    try {
+      // Check if there are more campaigns using the Facebook SDK pagination
+      if (campaigns.hasNext && campaigns.hasNext()) {
+        hasMore = true;
+        const paging = campaigns.paging;
+        nextCursor = paging?.cursors?.after || "";
+        console.log(`Has more campaigns. Next cursor: ${nextCursor}`);
+      } else {
+        console.log("No more campaigns to fetch");
+      }
+    } catch (pagingError) {
+      console.warn(
+        "Error checking pagination, assuming no more campaigns:",
+        pagingError
+      );
+      hasMore = false;
+      nextCursor = "";
+    }
+
+    if (hasMore && !shouldCreateFollowUpJob(startTime) && nextCursor) {
       // More campaigns to fetch
       console.log("🔄 Creating follow-up job for more campaigns");
-      console.log(`Next after cursor: ${nextAfter}`);
+      console.log(`Next cursor: ${nextCursor}`);
       await createFollowUpJob({
         accountId,
         timeframe,
         action: "get24HourData",
         requestId,
         phase: "campaigns",
-        after: nextAfter,
+        after: nextCursor,
       });
     } else {
       // All campaigns processed, move to adsets phase
@@ -1047,7 +1098,7 @@ async function processCampaignsPhase(
       processedCampaigns: processedCampaigns.length,
       campaignIds,
       phase: "campaigns",
-      after: nextAfter,
+      after: nextCursor,
       remainingTime: getRemainingTime(startTime),
       hasMore,
       completed: !hasMore,
