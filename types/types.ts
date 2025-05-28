@@ -49,20 +49,106 @@ export type Database = {
         };
         Relationships: [];
       };
-      accounts_duplicate: {
+      ad_engagement_metrics: {
         Row: {
-          account_id: string;
-          account_name: string;
+          ad_id: string;
+          avg_watch_time_seconds: number | null;
+          cost_per_2sec_view: number | null;
+          cost_per_3sec_view: number | null;
+          cost_per_link_click: number | null;
+          cost_per_page_engagement: number | null;
+          cost_per_post_comment: number | null;
+          cost_per_post_engagement: number | null;
+          cost_per_thruplay: number | null;
+          created_at: string | null;
+          date: string;
+          hook_rate_percentage: number | null;
+          id: number;
+          inline_link_clicks: number | null;
+          inline_post_engagement: number | null;
+          page_engagement: number | null;
+          post_comments: number | null;
+          post_engagement: number | null;
+          three_sec_video_views: number | null;
+          thruplays: number | null;
+          two_sec_video_views: number | null;
+          updated_at: string | null;
+          video_25_percent_watched: number | null;
+          video_30s_watched: number | null;
+          video_50_percent_watched: number | null;
+          video_75_percent_watched: number | null;
+          video_95_percent_watched: number | null;
+          vtr_percentage: number | null;
         };
         Insert: {
-          account_id: string;
-          account_name: string;
+          ad_id: string;
+          avg_watch_time_seconds?: number | null;
+          cost_per_2sec_view?: number | null;
+          cost_per_3sec_view?: number | null;
+          cost_per_link_click?: number | null;
+          cost_per_page_engagement?: number | null;
+          cost_per_post_comment?: number | null;
+          cost_per_post_engagement?: number | null;
+          cost_per_thruplay?: number | null;
+          created_at?: string | null;
+          date: string;
+          hook_rate_percentage?: number | null;
+          id?: number;
+          inline_link_clicks?: number | null;
+          inline_post_engagement?: number | null;
+          page_engagement?: number | null;
+          post_comments?: number | null;
+          post_engagement?: number | null;
+          three_sec_video_views?: number | null;
+          thruplays?: number | null;
+          two_sec_video_views?: number | null;
+          updated_at?: string | null;
+          video_25_percent_watched?: number | null;
+          video_30s_watched?: number | null;
+          video_50_percent_watched?: number | null;
+          video_75_percent_watched?: number | null;
+          video_95_percent_watched?: number | null;
+          vtr_percentage?: number | null;
         };
         Update: {
-          account_id?: string;
-          account_name?: string;
+          ad_id?: string;
+          avg_watch_time_seconds?: number | null;
+          cost_per_2sec_view?: number | null;
+          cost_per_3sec_view?: number | null;
+          cost_per_link_click?: number | null;
+          cost_per_page_engagement?: number | null;
+          cost_per_post_comment?: number | null;
+          cost_per_post_engagement?: number | null;
+          cost_per_thruplay?: number | null;
+          created_at?: string | null;
+          date?: string;
+          hook_rate_percentage?: number | null;
+          id?: number;
+          inline_link_clicks?: number | null;
+          inline_post_engagement?: number | null;
+          page_engagement?: number | null;
+          post_comments?: number | null;
+          post_engagement?: number | null;
+          three_sec_video_views?: number | null;
+          thruplays?: number | null;
+          two_sec_video_views?: number | null;
+          updated_at?: string | null;
+          video_25_percent_watched?: number | null;
+          video_30s_watched?: number | null;
+          video_50_percent_watched?: number | null;
+          video_75_percent_watched?: number | null;
+          video_95_percent_watched?: number | null;
+          vtr_percentage?: number | null;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "ad_engagement_metrics_ad_id_fkey";
+            columns: ["ad_id"];
+            isOneToOne: false;
+            referencedRelation: "meta_ads";
+            referencedColumns: ["ad_id"];
+          }
+        ];
       };
       api_cache: {
         Row: {
@@ -187,6 +273,45 @@ export type Database = {
           status_code?: number;
           success?: boolean;
           user_id?: string | null;
+        };
+        Relationships: [];
+      };
+      background_jobs: {
+        Row: {
+          completed_at: string | null;
+          created_at: string | null;
+          error_message: string | null;
+          id: string;
+          job_type: string;
+          progress: number | null;
+          request_id: string;
+          result_data: Json | null;
+          status: string;
+          updated_at: string | null;
+        };
+        Insert: {
+          completed_at?: string | null;
+          created_at?: string | null;
+          error_message?: string | null;
+          id?: string;
+          job_type: string;
+          progress?: number | null;
+          request_id: string;
+          result_data?: Json | null;
+          status?: string;
+          updated_at?: string | null;
+        };
+        Update: {
+          completed_at?: string | null;
+          created_at?: string | null;
+          error_message?: string | null;
+          id?: string;
+          job_type?: string;
+          progress?: number | null;
+          request_id?: string;
+          result_data?: Json | null;
+          status?: string;
+          updated_at?: string | null;
         };
         Relationships: [];
       };
@@ -462,6 +587,13 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: "meta_account_insights";
             referencedColumns: ["account_id"];
+          },
+          {
+            foreignKeyName: "meta_ad_sets_campaign_id_fkey";
+            columns: ["campaign_id"];
+            isOneToOne: false;
+            referencedRelation: "meta_campaigns";
+            referencedColumns: ["campaign_id"];
           }
         ];
       };
@@ -484,6 +616,7 @@ export type Database = {
           effective_object_story_id: string | null;
           effective_status: string | null;
           engagement_audience: boolean | null;
+          image_url: string | null;
           impressions: number | null;
           instagram_permalink_url: string | null;
           issues_info: Json[] | null;
@@ -502,6 +635,7 @@ export type Database = {
           tracking_specs: Json | null;
           updated_at: string | null;
           url_tags: string | null;
+          video_id: string | null;
         };
         Insert: {
           account_id?: string | null;
@@ -521,6 +655,7 @@ export type Database = {
           effective_object_story_id?: string | null;
           effective_status?: string | null;
           engagement_audience?: boolean | null;
+          image_url?: string | null;
           impressions?: number | null;
           instagram_permalink_url?: string | null;
           issues_info?: Json[] | null;
@@ -539,6 +674,7 @@ export type Database = {
           tracking_specs?: Json | null;
           updated_at?: string | null;
           url_tags?: string | null;
+          video_id?: string | null;
         };
         Update: {
           account_id?: string | null;
@@ -558,6 +694,7 @@ export type Database = {
           effective_object_story_id?: string | null;
           effective_status?: string | null;
           engagement_audience?: boolean | null;
+          image_url?: string | null;
           impressions?: number | null;
           instagram_permalink_url?: string | null;
           issues_info?: Json[] | null;
@@ -576,6 +713,7 @@ export type Database = {
           tracking_specs?: Json | null;
           updated_at?: string | null;
           url_tags?: string | null;
+          video_id?: string | null;
         };
         Relationships: [
           {
@@ -784,6 +922,39 @@ export type Database = {
             referencedColumns: ["account_id"];
           }
         ];
+      };
+      meta_cron_logs: {
+        Row: {
+          accounts_processed: number;
+          created_at: string | null;
+          execution_time: string;
+          failed_accounts: number;
+          id: number;
+          results: Json;
+          successful_accounts: number;
+          updated_at: string | null;
+        };
+        Insert: {
+          accounts_processed: number;
+          created_at?: string | null;
+          execution_time: string;
+          failed_accounts: number;
+          id?: number;
+          results: Json;
+          successful_accounts: number;
+          updated_at?: string | null;
+        };
+        Update: {
+          accounts_processed?: number;
+          created_at?: string | null;
+          execution_time?: string;
+          failed_accounts?: number;
+          id?: number;
+          results?: Json;
+          successful_accounts?: number;
+          updated_at?: string | null;
+        };
+        Relationships: [];
       };
       meta_daily_metrics: {
         Row: {

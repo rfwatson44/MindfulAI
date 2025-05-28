@@ -12,6 +12,11 @@ import {
   trackCreativeApiFetches,
   fetchCreativeDetails,
 } from "@/utils/meta-marketing/creative-management";
+import {
+  startMetaMarketingBackgroundJob,
+  MetaMarketingJobPayload,
+} from "@/app/actions/meta-marketing-queue";
+import { v4 as uuidv4 } from "uuid";
 
 // Import these types for type checking but not for actual usage
 
@@ -470,392 +475,408 @@ async function getInsights(
   );
 }
 
-// Helper function to determine actual creative type
-function determineActualCreativeType(details: any): string {
-  if (!details || !details.object_type) {
+// Helper function to fetch creative details with retry mechanism and FORCE asset_feed_spec
+async function fetchCreativeWithRetry(
+  creativeId: string,
+  supabase: SupabaseClient,
+  accountId: string,
+  maxRetries = 5 // Increased retries for critical data
+): Promise<any> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(
+        `🎨 Fetching creative ${creativeId} (attempt ${attempt}/${maxRetries})`
+      );
+
+      const creative = await withRateLimitRetry(
+        async () => {
+          const creativeObj = new AdCreative(creativeId);
+          return creativeObj.read([
+            "id",
+            "name",
+            "title",
+            "body",
+            "object_type",
+            "thumbnail_url",
+            "image_url",
+            "video_id",
+            "url_tags",
+            "template_url",
+            "instagram_permalink_url",
+            "effective_object_story_id",
+            "asset_feed_spec",
+            "object_story_spec",
+            "platform_customizations",
+          ]);
+        },
+        {
+          accountId,
+          endpoint: "creative",
+          callType: "READ",
+          points: RATE_LIMIT_CONFIG.POINTS.READ,
+          supabase,
+        }
+      );
+
+      console.log(`✅ Successfully fetched creative ${creativeId}`);
+
+      // CRITICAL: If we have creative data but no asset_feed_spec, create fallback
+      if (creative && !creative.asset_feed_spec) {
+        console.log(
+          `⚠️ Creative ${creativeId} missing asset_feed_spec, creating fallback...`
+        );
+
+        // Create fallback asset_feed_spec from available data
+        let fallbackAssetFeedSpec = null;
+
+        if (creative.object_story_spec?.link_data) {
+          const linkData = creative.object_story_spec.link_data;
+          fallbackAssetFeedSpec = {
+            _fallback_source: "OBJECT_STORY_SPEC",
+            ...(linkData.video_id && {
+              videos: [{ video_id: linkData.video_id }],
+            }),
+            ...(linkData.image_hash && {
+              images: [{ image_hash: linkData.image_hash }],
+            }),
+            ...(linkData.picture && {
+              images: [{ picture: linkData.picture }],
+            }),
+            ...(linkData.call_to_action && {
+              call_to_action: linkData.call_to_action,
+            }),
+            ...(linkData.description && {
+              description: linkData.description,
+            }),
+            ...(linkData.link && {
+              link_url: linkData.link,
+            }),
+          };
+        } else if (creative.video_id) {
+          fallbackAssetFeedSpec = {
+            _fallback_source: "VIDEO_ID",
+            videos: [
+              {
+                video_id: creative.video_id,
+                ...(creative.thumbnail_url && {
+                  thumbnail_url: creative.thumbnail_url,
+                }),
+              },
+            ],
+          };
+        } else if (creative.image_url) {
+          fallbackAssetFeedSpec = {
+            _fallback_source: "IMAGE_URL",
+            images: [{ url: creative.image_url }],
+          };
+        }
+
+        if (fallbackAssetFeedSpec) {
+          creative.asset_feed_spec = fallbackAssetFeedSpec;
+          console.log(
+            `✅ Created fallback asset_feed_spec for creative ${creativeId}`
+          );
+        } else {
+          console.error(
+            `❌ CRITICAL: Could not create asset_feed_spec for creative ${creativeId}`
+          );
+          creative.asset_feed_spec = {
+            _fallback_source: "FAILED_TO_EXTRACT",
+            error: "No extractable asset data found",
+          };
+        }
+      }
+
+      return creative;
+    } catch (error: any) {
+      console.error(
+        `❌ Creative fetch attempt ${attempt} failed for ${creativeId}:`,
+        error
+      );
+
+      // Check if it's a deleted creative or permission error
+      if (
+        error.response?.error?.code === 803 ||
+        error.response?.error?.message?.includes("does not exist") ||
+        error.response?.error?.message?.includes("not found")
+      ) {
+        console.log(`🗑️ Creative ${creativeId} appears to be deleted`);
+        return {
+          _deleted: true,
+          asset_feed_spec: {
+            _fallback_source: "DELETED_CREATIVE",
+            error: "Creative was deleted",
+          },
+        };
+      }
+
+      if (attempt >= maxRetries) {
+        console.error(
+          `❌ All retry attempts failed for creative ${creativeId}, creating emergency fallback`
+        );
+        return {
+          _fetch_failed: true,
+          asset_feed_spec: {
+            _fallback_source: "FETCH_FAILED_EMERGENCY",
+            error: error.response?.error?.message || "Unknown fetch error",
+            creative_id: creativeId,
+          },
+        };
+      }
+
+      // Wait before retry with exponential backoff
+      await delay(1000 * Math.pow(2, attempt - 1));
+    }
+  }
+
+  // This should never be reached, but just in case
+  return {
+    _emergency_fallback: true,
+    asset_feed_spec: {
+      _fallback_source: "EMERGENCY_FALLBACK",
+      error: "Unexpected code path",
+      creative_id: creativeId,
+    },
+  };
+}
+
+// Helper function to determine creative type with comprehensive fallbacks
+function determineCreativeType(creative: any, adData: any): string {
+  if (!creative) {
+    // Fallback: check asset_feed_spec or object_story_spec
+    if (adData.asset_feed_spec) {
+      const assetFeed = adData.asset_feed_spec;
+      if (assetFeed.videos && assetFeed.videos.length > 0) return "VIDEO";
+      if (assetFeed.images && assetFeed.images.length > 0) return "IMAGE";
+    }
+
+    if (adData.object_story_spec?.link_data) {
+      const linkData = adData.object_story_spec.link_data;
+      if (linkData.video_id) return "VIDEO";
+      if (linkData.image_hash || linkData.picture) return "IMAGE";
+    }
+
     return "UNKNOWN";
   }
 
-  if (details.object_type === "SHARE") {
-    // For SHARE type, use better classification based on content
-    if (details.video_id) {
-      return "VIDEO";
-    } else if (details.image_url || details.thumbnail_url) {
-      return "IMAGE";
-    }
+  // Check creative object
+  if (creative.video_id) return "VIDEO";
+  if (creative.image_url || creative.thumbnail_url) return "IMAGE";
+
+  // Check object_story_spec
+  if (creative.object_story_spec?.link_data) {
+    const linkData = creative.object_story_spec.link_data;
+    if (linkData.video_id) return "VIDEO";
+    if (linkData.image_hash || linkData.picture) return "IMAGE";
   }
 
-  // Return original type if not SHARE or no better classification available
-  return details.object_type;
-}
-
-// Helper function to fetch creative details with retry mechanism
-async function fetchCreativeWithRetry(
-  creativeId: string,
-  maxRetries = 3
-): Promise<any> {
-  try {
-    // Use the enhanced creative fetching logic
-    const fetchResult = await fetchCreative(creativeId, maxRetries);
-
-    // Track API usage for metrics
-    await trackCreativeApiFetches(
-      await createClient(),
-      "meta", // Generic tracking for now
-      fetchResult.success,
-      fetchResult.errorType
-    );
-
-    if (fetchResult.success) {
-      // Process data with fallbacks, using actual creative data
-      return processCreativeData(fetchResult.data, null);
-    } else {
-      // Process with fallbacks, using error info
-      return processCreativeData(null, null, fetchResult.errorType);
-    }
-  } catch (error) {
-    console.error(
-      `Unexpected error in fetchCreativeWithRetry for ${creativeId}:`,
-      error
-    );
-    return {
-      thumbnail_url: null,
-      creative_type: "UNKNOWN",
-      asset_feed_spec: "UNEXPECTED_ERROR",
-      url_tags: null,
-      template_url: null,
-      instagram_permalink_url: null,
-      effective_object_story_id: null,
-      video_id: null,
-      image_url: null,
-    };
+  // Check asset_feed_spec
+  if (creative.asset_feed_spec) {
+    const assetFeed = creative.asset_feed_spec;
+    if (assetFeed.videos && assetFeed.videos.length > 0) return "VIDEO";
+    if (assetFeed.images && assetFeed.images.length > 0) return "IMAGE";
   }
+
+  return "UNKNOWN";
 }
 
-// Update the ad processing code to use parallel fetching with retries
-// This replaces the existing for loop for processing ads
-const processAdsWithParallelCreativeFetch = async (
-  ads: any[],
-  accountId: string,
-  adSetId: string,
-  campaignId: string,
+// Enhanced function to save ad engagement metrics with comprehensive data
+async function saveAdEngagementMetrics(
   supabase: SupabaseClient,
-  timeframe: string = "24h"
-) => {
-  // Process insights for all ads in parallel
-  const adInsightsPromises = ads.map((ad) =>
-    getInsights(
-      ad as InsightCapableEntity,
-      supabase,
-      accountId,
-      timeframe
-    ).catch((error) => {
-      console.error(`Error fetching insights for ad ${ad.id}:`, error);
-      return null;
-    })
-  );
-  const adInsightsResults = await Promise.all(adInsightsPromises);
+  adId: string,
+  insights: any,
+  date: string
+) {
+  try {
+    console.log(`📊 Processing engagement metrics for ad ${adId}...`);
 
-  // Process creative details for all ads in parallel with a small delay between requests (300ms)
-  // Using enhanced fetchCreativeDetails to get better fallbacks
-  const adCreativePromises = ads.map((ad, index) => {
-    if (ad.creative && ad.creative.id) {
-      // Use a delay of index * 300ms to stagger requests
-      return fetchCreativeDetails(ad, Math.min(index * 300, 5000)).catch(
-        (error) => {
-          console.error(`Error in creative fetch for ad ${ad.id}:`, error);
-          return null;
-        }
-      );
-    }
-    return Promise.resolve(null);
-  });
-
-  const creativeResults = await Promise.all(adCreativePromises);
-
-  // Combine ad data with insights and creative details
-  const processedAds = ads.map((ad, index) => {
-    const adInsights = adInsightsResults[index];
-    const creativeDetails = creativeResults[index];
-
-    // Create base ad record
-    const adRecord = {
-      ad_id: ad.id,
-      account_id: accountId,
-      ad_set_id: adSetId,
-      campaign_id: campaignId,
-      name: ad.name,
-      status: ad.status,
-      creative: ad.creative || null,
-      tracking_specs: ad.tracking_specs || null,
-      conversion_specs: ad.conversion_specs || null,
-      preview_url: ad.preview_shareable_link || null,
-      creative_id: ad.creative?.id || null,
-      effective_object_story_id: ad.effective_object_story_id || null,
-      configured_status: ad.configured_status || null,
-      effective_status: ad.effective_status || null,
-      issues_info: ad.issues_info || [],
-      source_ad_id: ad.source_ad_id || null,
-      engagement_audience: ad.engagement_audience || null,
-      object_story_spec: ad.object_story_spec || null,
-      recommendations: ad.recommendations || [],
-      tracking_and_conversion_specs: ad.tracking_and_conversion_specs || null,
-      // Add creative details if available
-      ...(creativeDetails || {}),
-    };
-
-    // Only add insights if they're available
-    if (adInsights) {
-      const insightsData = adInsights as InsightResult;
-      return {
-        ...adRecord,
-        impressions: safeParseInt(insightsData.impressions),
-        clicks: safeParseInt(insightsData.clicks),
-        reach: safeParseInt(insightsData.reach),
-        spend: safeParseFloat(insightsData.spend),
-        conversions: insightsData.actions
-          ? insightsData.actions.reduce(
-              (
-                acc: Record<string, string>,
-                action: { action_type: string; value: string }
-              ) => {
-                acc[action.action_type] = action.value;
-                return acc;
-              },
-              {}
-            )
+    // ALWAYS create a record, even if insights are null
+    const engagementData = {
+      ad_id: adId,
+      date: date,
+      // If no insights, set all metrics to null but still create the record
+      inline_link_clicks: insights
+        ? safeParseInt(insights.inline_link_clicks)
+        : null,
+      inline_post_engagement: insights
+        ? safeParseInt(insights.inline_post_engagement)
+        : null,
+      // Video metrics
+      video_30s_watched: insights?.video_30_sec_watched_actions
+        ? safeParseInt(insights.video_30_sec_watched_actions[0]?.value)
+        : null,
+      video_25_percent_watched: insights?.video_p25_watched_actions
+        ? safeParseInt(insights.video_p25_watched_actions[0]?.value)
+        : null,
+      video_50_percent_watched: insights?.video_p50_watched_actions
+        ? safeParseInt(insights.video_p50_watched_actions[0]?.value)
+        : null,
+      video_75_percent_watched: insights?.video_p75_watched_actions
+        ? safeParseInt(insights.video_p75_watched_actions[0]?.value)
+        : null,
+      video_95_percent_watched: insights?.video_p95_watched_actions
+        ? safeParseInt(insights.video_p95_watched_actions[0]?.value)
+        : null,
+      // Engagement metrics from actions
+      page_engagement: insights?.actions?.find(
+        (a: any) => a.action_type === "page_engagement"
+      )?.value
+        ? safeParseInt(
+            insights.actions.find(
+              (a: any) => a.action_type === "page_engagement"
+            ).value
+          )
+        : null,
+      post_engagement: insights?.actions?.find(
+        (a: any) => a.action_type === "post_engagement"
+      )?.value
+        ? safeParseInt(
+            insights.actions.find(
+              (a: any) => a.action_type === "post_engagement"
+            ).value
+          )
+        : null,
+      post_comments: insights?.actions?.find(
+        (a: any) => a.action_type === "comment"
+      )?.value
+        ? safeParseInt(
+            insights.actions.find((a: any) => a.action_type === "comment").value
+          )
+        : null,
+      // Video view metrics
+      two_sec_video_views: insights?.video_continuous_2_sec_watched_actions
+        ? safeParseInt(
+            insights.video_continuous_2_sec_watched_actions[0]?.value
+          )
+        : null,
+      three_sec_video_views: insights?.actions?.find(
+        (a: any) => a.action_type === "video_view"
+      )?.value
+        ? safeParseInt(
+            insights.actions.find((a: any) => a.action_type === "video_view")
+              .value
+          )
+        : null,
+      thruplays: insights?.video_thruplay_watched_actions
+        ? safeParseInt(insights.video_thruplay_watched_actions[0]?.value)
+        : null,
+      // Cost metrics from cost_per_action_type
+      cost_per_link_click: insights?.cost_per_action_type?.find(
+        (c: any) => c.action_type === "link_click"
+      )?.value
+        ? safeParseFloat(
+            insights.cost_per_action_type.find(
+              (c: any) => c.action_type === "link_click"
+            ).value
+          )
+        : null,
+      cost_per_post_engagement: insights?.cost_per_action_type?.find(
+        (c: any) => c.action_type === "post_engagement"
+      )?.value
+        ? safeParseFloat(
+            insights.cost_per_action_type.find(
+              (c: any) => c.action_type === "post_engagement"
+            ).value
+          )
+        : null,
+      cost_per_page_engagement: insights?.cost_per_action_type?.find(
+        (c: any) => c.action_type === "page_engagement"
+      )?.value
+        ? safeParseFloat(
+            insights.cost_per_action_type.find(
+              (c: any) => c.action_type === "page_engagement"
+            ).value
+          )
+        : null,
+      cost_per_thruplay: insights?.cost_per_action_type?.find(
+        (c: any) => c.action_type === "video_thruplay_watched"
+      )?.value
+        ? safeParseFloat(
+            insights.cost_per_action_type.find(
+              (c: any) => c.action_type === "video_thruplay_watched"
+            ).value
+          )
+        : null,
+      cost_per_2sec_view: insights?.cost_per_action_type?.find(
+        (c: any) => c.action_type === "video_continuous_2_sec_watched"
+      )?.value
+        ? safeParseFloat(
+            insights.cost_per_action_type.find(
+              (c: any) => c.action_type === "video_continuous_2_sec_watched"
+            ).value
+          )
+        : null,
+      cost_per_3sec_view: insights?.cost_per_action_type?.find(
+        (c: any) => c.action_type === "video_view"
+      )?.value
+        ? safeParseFloat(
+            insights.cost_per_action_type.find(
+              (c: any) => c.action_type === "video_view"
+            ).value
+          )
+        : null,
+      // Calculated metrics
+      avg_watch_time_seconds: insights?.video_avg_time_watched_actions
+        ? safeParseFloat(insights.video_avg_time_watched_actions[0]?.value)
+        : null,
+      // VTR and Hook Rate (calculated)
+      vtr_percentage:
+        insights?.video_p25_watched_actions && insights?.impressions
+          ? (safeParseInt(insights.video_p25_watched_actions[0]?.value) /
+              safeParseInt(insights.impressions)) *
+            100
           : null,
-        cost_per_conversion:
-          insightsData.actions && insightsData.actions.length > 0
-            ? safeParseFloat(insightsData.spend) /
-              insightsData.actions.reduce(
-                (sum: number, action: { value: string }) =>
-                  sum + safeParseInt(action.value),
-                0
-              )
-            : null,
-        last_updated: new Date(),
-        created_at: new Date(),
-        updated_at: new Date(),
-      };
-    }
-
-    // Return ad record without insights
-    return {
-      ...adRecord,
-      last_updated: new Date(),
-      created_at: new Date(),
-      updated_at: new Date(),
+      hook_rate_percentage:
+        insights?.video_continuous_2_sec_watched_actions &&
+        insights?.impressions
+          ? (safeParseInt(
+              insights.video_continuous_2_sec_watched_actions[0]?.value
+            ) /
+              safeParseInt(insights.impressions)) *
+            100
+          : null,
+      // Metadata
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
-  });
 
-  // Batch upsert the processed ads
-  if (processedAds.length > 0) {
-    const { error: adsUpsertError } = await supabase
-      .from("meta_ads")
-      .upsert(processedAds, {
-        onConflict: "ad_id",
+    console.log(`📊 Engagement data prepared for ad ${adId}:`, {
+      insights_available: insights ? true : false,
+      inline_link_clicks: engagementData.inline_link_clicks,
+      video_30s_watched: engagementData.video_30s_watched,
+      thruplays: engagementData.thruplays,
+    });
+
+    const { error: metricsError } = await supabase
+      .from("ad_engagement_metrics")
+      .upsert([engagementData], {
+        onConflict: "ad_id,date",
         ignoreDuplicates: false,
       });
 
-    if (adsUpsertError) {
-      console.error("Error upserting ads:", adsUpsertError);
+    if (metricsError) {
+      console.error(
+        `❌ Error saving engagement metrics for ad ${adId}:`,
+        metricsError
+      );
+      throw metricsError; // Re-throw so caller can handle
     } else {
-      console.log(`Successfully upserted ${processedAds.length} ads`);
-
-      // Process and store engagement metrics
-      try {
-        const today = new Date().toISOString().split("T")[0];
-
-        // Process each ad one at a time with proper error handling
-        for (let i = 0; i < processedAds.length; i++) {
-          const ad = processedAds[i];
-          const adInsights = adInsightsResults[i];
-
-          // Skip if no insights or ad_id
-          if (!adInsights || !ad.ad_id) {
-            console.warn(
-              `Skipping engagement metrics for ad ${
-                ad.ad_id || "unknown"
-              }: No insights data`
-            );
-            continue;
-          }
-
-          try {
-            const adSpend = safeParseFloat(adInsights.spend || "0");
-            const engagementMetrics = processEngagementMetrics(
-              adInsights,
-              adSpend
-            );
-
-            // Skip if no engagement metrics
-            if (Object.keys(engagementMetrics).length === 0) {
-              console.warn(
-                `No engagement metrics processed for ad ${ad.ad_id}`
-              );
-              continue;
-            }
-
-            // Prepare record with ad_id and date
-            const engagementRecord = {
-              ad_id: ad.ad_id,
-              date: today,
-              ...engagementMetrics,
-            };
-
-            // Insert or update engagement metrics
-            const { error } = await supabase
-              .from("ad_engagement_metrics")
-              .upsert(engagementRecord, {
-                onConflict: "ad_id,date",
-                ignoreDuplicates: false,
-              });
-
-            if (error) {
-              console.error(
-                `Error storing engagement metrics for ad ${ad.ad_id}:`,
-                error
-              );
-            }
-          } catch (adError) {
-            console.error(
-              `Error processing engagement metrics for ad ${ad.ad_id}:`,
-              adError
-            );
-            // Continue with next ad
-          }
-        }
-
-        console.log(
-          `Processed engagement metrics for ${processedAds.length} ads`
-        );
-      } catch (error) {
-        console.error("Error processing engagement metrics batch:", error);
-        // Continue execution - engagement metrics failure shouldn't block main flow
-      }
+      console.log(
+        `✅ Saved engagement metrics for ad ${adId} (insights: ${
+          insights ? "available" : "null"
+        })`
+      );
     }
-  }
-};
-
-// Function to process engagement metrics data
-function processEngagementMetrics(
-  insights: InsightResult | null,
-  spend: number
-): Record<string, any> {
-  if (!insights) {
-    console.warn(
-      "No insights data available for engagement metrics processing"
-    );
-    return {};
-  }
-
-  try {
-    // Extract direct metrics from insights
-    const impressions = safeParseInt(insights.impressions);
-
-    // Use the correct field names from Facebook API
-    const inlinePostEngagement = safeParseInt(insights.inline_post_engagement);
-    const inlineLinkClicks = safeParseInt(insights.inline_link_clicks);
-
-    // Extract comment counts from actions if available
-    const postComments = extractActionValue(insights.actions, "comment");
-
-    // Extract video metrics from actions arrays
-    const twoSecVideoViews = extractActionValue(
-      insights.video_continuous_2_sec_watched_actions,
-      "video_view"
-    );
-    const thruplays = extractActionValue(
-      insights.video_thruplay_watched_actions,
-      "video_view"
-    );
-    const video30sWatched = extractActionValue(
-      insights.video_30_sec_watched_actions,
-      "video_view"
-    );
-
-    // Video percentage metrics
-    const video25PercentWatched = extractActionValue(
-      insights.video_p25_watched_actions,
-      "video_view"
-    );
-    const video50PercentWatched = extractActionValue(
-      insights.video_p50_watched_actions,
-      "video_view"
-    );
-    const video75PercentWatched = extractActionValue(
-      insights.video_p75_watched_actions,
-      "video_view"
-    );
-    const video95PercentWatched = extractActionValue(
-      insights.video_p95_watched_actions,
-      "video_view"
-    );
-
-    // Average watch time
-    const avgWatchTimeActions = insights.video_avg_time_watched_actions || [];
-    const avgWatchTimeSeconds =
-      avgWatchTimeActions.length > 0
-        ? safeParseFloat(avgWatchTimeActions[0]?.value || "0")
-        : 0;
-
-    // Calculate derived metrics
-    // Use safe division to prevent dividing by zero
-    const safeDivide = (numerator: number, denominator: number) =>
-      denominator > 0 ? numerator / denominator : 0;
-
-    const costPerPostEngagement = safeDivide(spend, inlinePostEngagement);
-    const costPerLinkClick = safeDivide(spend, inlineLinkClicks);
-    const costPerPostComment = safeDivide(spend, postComments);
-    const costPer2secView = safeDivide(spend, twoSecVideoViews);
-    const costPerThruplay = safeDivide(spend, thruplays);
-
-    // Calculate percentages
-    const vtrPercentage = safeDivide(thruplays, impressions) * 100;
-    const hookRatePercentage = safeDivide(twoSecVideoViews, impressions) * 100;
-
-    return {
-      // Direct metrics
-      inline_post_engagement: inlinePostEngagement,
-      inline_link_clicks: inlineLinkClicks,
-      post_comments: postComments,
-      two_sec_video_views: twoSecVideoViews,
-      thruplays: thruplays,
-      video_30s_watched: video30sWatched,
-      video_25_percent_watched: video25PercentWatched,
-      video_50_percent_watched: video50PercentWatched,
-      video_75_percent_watched: video75PercentWatched,
-      video_95_percent_watched: video95PercentWatched,
-      avg_watch_time_seconds: avgWatchTimeSeconds,
-
-      // Calculated metrics
-      cost_per_post_engagement: Number(costPerPostEngagement.toFixed(2)),
-      cost_per_link_click: Number(costPerLinkClick.toFixed(2)),
-      cost_per_post_comment: Number(costPerPostComment.toFixed(2)),
-      cost_per_2sec_view: Number(costPer2secView.toFixed(2)),
-      cost_per_thruplay: Number(costPerThruplay.toFixed(2)),
-      vtr_percentage: Number(vtrPercentage.toFixed(2)),
-      hook_rate_percentage: Number(hookRatePercentage.toFixed(2)),
-    };
   } catch (error) {
-    console.error("Error processing engagement metrics:", error);
-    return {}; // Return empty object on error to ensure main ad processing continues
+    console.error(
+      `❌ Error processing engagement metrics for ad ${adId}:`,
+      error
+    );
+    throw error; // Re-throw so caller can handle
   }
 }
 
-// Helper function to extract value from actions array
-function extractActionValue(
-  actions: any[] | undefined,
-  actionType: string
-): number {
-  if (!actions || !Array.isArray(actions)) return 0;
-
-  const action = actions.find((a) => a.action_type === actionType);
-  return action ? safeParseInt(action.value) : 0;
-}
-
-// GET handler for account info and campaigns
+// GET handler - now triggers background jobs instead of processing directly
 export async function GET(request: Request) {
   const supabase = await createClient();
 
@@ -872,508 +893,90 @@ export async function GET(request: Request) {
       );
     }
 
-    // Initialize Facebook API
-    const api = FacebookAdsApi.init(META_CONFIG.accessToken);
-    api.setDebug(true);
+    // Generate a unique request ID for tracking
+    const requestId = uuidv4();
 
-    switch (action) {
-      case "get24HourData":
-      case "getData":
-        const data = await fetchData(accountId, supabase, timeframe);
+    // Create the job payload
+    const jobPayload: MetaMarketingJobPayload = {
+      accountId,
+      timeframe,
+      action: action || "getData",
+      requestId,
+    };
+
+    // Check if there's already a running job for this account and action
+    const { data: existingJobs } = await supabase
+      .from("background_jobs")
+      .select("*")
+      .eq("job_type", "meta-marketing-sync")
+      .in("status", ["queued", "processing"])
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (existingJobs && existingJobs.length > 0) {
+      const existingJob = existingJobs[0];
+      const timeSinceCreated =
+        Date.now() - new Date(existingJob.created_at).getTime();
+
+      // If there's a job created in the last 5 minutes, return its status
+      if (timeSinceCreated < 5 * 60 * 1000) {
         return NextResponse.json({
-          result: data,
-          message: `Successfully fetched ${timeframe} data`,
-          dateRange:
-            timeframe === "24h"
-              ? getLast24HoursDateRange()
-              : getLast6MonthsDateRange(),
+          message: "Background job already in progress",
+          requestId: existingJob.request_id,
+          status: existingJob.status,
+          progress: existingJob.progress,
+          isBackgroundJob: true,
+          existingJob: true,
         });
-
-      case "getAccountInfo":
-        const accountInfo = await withRateLimitRetry(
-          async () => {
-            return new AdAccount(accountId).read([
-              "name",
-              "account_status",
-              "amount_spent",
-              "balance",
-              "currency",
-              "spend_cap",
-              "timezone_name",
-              "timezone_offset_hours_utc",
-              "business_country_code",
-              "disable_reason",
-              "is_prepay_account",
-              "tax_id_status",
-            ]);
-          },
-          {
-            accountId,
-            endpoint: "account_info",
-            callType: "READ",
-            points: RATE_LIMIT_CONFIG.POINTS.READ,
-            supabase,
-          }
-        );
-
-        // Use appropriate date range based on timeframe
-        const dateRange =
-          timeframe === "24h"
-            ? getLast24HoursDateRange()
-            : getLast6MonthsDateRange();
-        console.log(
-          `Fetching insights from ${dateRange.since} to ${dateRange.until}`
-        );
-
-        const insights = await withRateLimitRetry(
-          async () => {
-            return new AdAccount(accountId).getInsights(
-              [
-                "impressions",
-                "clicks",
-                "reach",
-                "spend",
-                "cpc",
-                "cpm",
-                "ctr",
-                "frequency",
-                "objective",
-                "action_values",
-                "actions",
-                "cost_per_action_type",
-                "cost_per_unique_click",
-                "outbound_clicks",
-                "outbound_clicks_ctr",
-                "website_ctr",
-                "website_purchase_roas",
-              ],
-              {
-                time_range: dateRange,
-                level: "account",
-                breakdowns: [],
-              }
-            );
-          },
-          {
-            accountId,
-            endpoint: "insights",
-            callType: "READ",
-            points: RATE_LIMIT_CONFIG.POINTS.READ,
-            supabase,
-          }
-        );
-        console.log({ accountId, insights });
-
-        // Store enhanced account data
-        const accountData = {
-          account_id: accountId,
-          name: accountInfo.name,
-          account_status: accountInfo.account_status,
-          amount_spent: parseFloat(accountInfo.amount_spent) || 0,
-          balance: parseFloat(accountInfo.balance) || 0,
-          currency: accountInfo.currency,
-          spend_cap: parseFloat(accountInfo.spend_cap) || null,
-          timezone_name: accountInfo.timezone_name,
-          timezone_offset_hours_utc: accountInfo.timezone_offset_hours_utc,
-          business_country_code: accountInfo.business_country_code,
-          disable_reason: accountInfo.disable_reason,
-          is_prepay_account: accountInfo.is_prepay_account,
-          tax_id_status: accountInfo.tax_id_status,
-          insights_start_date: new Date(dateRange.since),
-          insights_end_date: new Date(dateRange.until),
-          total_impressions: safeParseInt(insights?.[0]?.impressions ?? "0"),
-          total_clicks: safeParseInt(insights?.[0]?.clicks ?? "0"),
-          total_reach: safeParseInt(insights?.[0]?.reach ?? "0"),
-          total_spend: parseFloat(insights?.[0]?.spend ?? "0"),
-          average_cpc: parseFloat(insights?.[0]?.cpc ?? "0"),
-          average_cpm: parseFloat(insights?.[0]?.cpm ?? "0"),
-          average_ctr: parseFloat(insights?.[0]?.ctr ?? "0"),
-          average_frequency: parseFloat(insights?.[0]?.frequency ?? "0"),
-          actions: insights?.[0]?.actions || [],
-          action_values: insights?.[0]?.action_values || [],
-          cost_per_action_type: insights?.[0]?.cost_per_action_type || [],
-          cost_per_unique_click: parseFloat(
-            insights?.[0]?.cost_per_unique_click ?? "0"
-          ),
-          outbound_clicks: insights?.[0]?.outbound_clicks || [],
-          outbound_clicks_ctr: parseFloat(
-            insights?.[0]?.outbound_clicks_ctr ?? "0"
-          ),
-          website_ctr: insights?.[0]?.website_ctr || [],
-          website_purchase_roas: parseFloat(
-            insights?.[0]?.website_purchase_roas ?? "0"
-          ),
-          last_updated: new Date(),
-        };
-        console.log("ACCOUNT DATA", accountData);
-
-        // Upsert with proper constraint
-        const { error: upsertError } = await supabase
-          .from("meta_account_insights")
-          .upsert([accountData], {
-            onConflict: "account_id",
-            ignoreDuplicates: false,
-          });
-
-        if (upsertError) {
-          throw new Error(
-            `Error upserting account data: ${upsertError.message}`
-          );
-        }
-
-        return NextResponse.json({
-          result: { ...accountInfo, insights: insights?.[0] },
-          cached: false,
-          dateRange,
-        });
-
-      case "getCampaigns":
-        // Fetch directly from Meta API with rate limiting
-        const campaigns = await withRateLimitRetry(
-          async () => {
-            console.log(
-              "Fetching campaigns from Meta API for account:",
-              accountId
-            );
-            return new AdAccount(accountId).getCampaigns(
-              [
-                "name",
-                "status",
-                "objective",
-                "special_ad_categories",
-                "bid_strategy",
-                "budget_remaining",
-                "buying_type",
-                "daily_budget",
-                "lifetime_budget",
-                "configured_status",
-                "effective_status",
-                "source_campaign_id",
-                "promoted_object",
-                "recommendations",
-                "spend_cap",
-                "topline_id",
-                "pacing_type",
-                "start_time",
-                "end_time",
-              ],
-              {
-                limit: RATE_LIMIT_CONFIG.BATCH_SIZE,
-              }
-            );
-          },
-          {
-            accountId,
-            endpoint: "campaigns",
-            callType: "READ",
-            points: RATE_LIMIT_CONFIG.POINTS.READ,
-            supabase,
-          }
-        );
-
-        const processedCampaigns = [];
-
-        for (const campaign of campaigns) {
-          try {
-            console.log("Processing campaign:", campaign.id);
-
-            // Get campaign insights with all new metrics, passing the timeframe
-            const insights = await getInsights(
-              campaign as InsightCapableEntity,
-              supabase,
-              accountId,
-              timeframe
-            );
-
-            // Store enhanced campaign data with all new columns aligned with Supabase schema
-            const campaignData = {
-              campaign_id: campaign.id,
-              account_id: accountId,
-              name: campaign.name,
-              status: campaign.status,
-              objective: campaign.objective,
-              special_ad_categories: campaign.special_ad_categories || [],
-              bid_strategy: campaign.bid_strategy,
-              budget_remaining: parseFloat(campaign.budget_remaining) || 0,
-              buying_type: campaign.buying_type,
-              daily_budget: parseFloat(campaign.daily_budget) || 0,
-              lifetime_budget: parseFloat(campaign.lifetime_budget) || 0,
-              configured_status: campaign.configured_status,
-              effective_status: campaign.effective_status,
-              source_campaign_id: campaign.source_campaign_id,
-              promoted_object: campaign.promoted_object,
-              recommendations: campaign.recommendations || [],
-              spend_cap: parseFloat(campaign.spend_cap) || null,
-              topline_id: campaign.topline_id,
-              pacing_type: campaign.pacing_type || [],
-              start_time: campaign.start_time
-                ? new Date(campaign.start_time)
-                : null,
-              end_time: campaign.end_time ? new Date(campaign.end_time) : null,
-              // Metrics from insights
-              impressions: safeParseInt(insights?.impressions),
-              clicks: safeParseInt(insights?.clicks),
-              reach: safeParseInt(insights?.reach),
-              spend: safeParseFloat(insights?.spend),
-              // Convert actions array to conversions object for our schema
-              conversions: insights?.actions
-                ? insights.actions.reduce((acc: any, action: any) => {
-                    acc[action.action_type] = action.value;
-                    return acc;
-                  }, {})
-                : null,
-              // Calculate cost per conversion if we have conversions
-              cost_per_conversion:
-                insights?.actions && insights.actions.length > 0
-                  ? safeParseFloat(insights.spend) /
-                    insights.actions.reduce(
-                      (sum: number, action: any) =>
-                        sum + safeParseInt(action.value),
-                      0
-                    )
-                  : null,
-              last_updated: new Date(),
-              created_at: new Date(), // Only set on first creation
-              updated_at: new Date(),
-            };
-
-            const { error: campaignError } = await supabase
-              .from("meta_campaigns")
-              .upsert([campaignData], {
-                onConflict: "campaign_id",
-                ignoreDuplicates: false,
-              })
-              .match({
-                campaign_id: campaign.id,
-                account_id: accountId,
-              });
-
-            if (campaignError) {
-              console.error("Error storing campaign:", campaignError);
-              continue;
-            }
-
-            // Get and store ad sets with rate limiting
-            const adSets = await withRateLimitRetry(
-              async () => {
-                return campaign.getAdSets(
-                  [
-                    "name",
-                    "status",
-                    "daily_budget",
-                    "lifetime_budget",
-                    "bid_amount",
-                    "billing_event",
-                    "optimization_goal",
-                    "targeting",
-                    "bid_strategy",
-                    "attribution_spec",
-                    "promoted_object",
-                    "pacing_type",
-                    "configured_status",
-                    "effective_status",
-                    "destination_type",
-                    "frequency_control_specs",
-                    "is_dynamic_creative",
-                    "issues_info",
-                    "learning_stage_info",
-                    "source_adset_id",
-                    "targeting_optimization_types",
-                    "use_new_app_click",
-                    "start_time",
-                    "end_time",
-                  ],
-                  { limit: RATE_LIMIT_CONFIG.BATCH_SIZE }
-                );
-              },
-              {
-                accountId,
-                endpoint: "adsets",
-                callType: "READ",
-                points: RATE_LIMIT_CONFIG.POINTS.READ,
-                supabase,
-              }
-            );
-
-            const campaignAdSets = [];
-
-            for (const adSet of adSets) {
-              const adSetInsights = await getInsights(
-                adSet as InsightCapableEntity,
-                supabase,
-                accountId,
-                timeframe
-              );
-
-              // Store enhanced ad set data with account_id aligned with Supabase schema
-              const adSetData = {
-                ad_set_id: adSet.id,
-                account_id: accountId,
-                campaign_id: campaign.id,
-                name: adSet.name,
-                status: adSet.status,
-                daily_budget: parseFloat(adSet.daily_budget) || 0,
-                lifetime_budget: parseFloat(adSet.lifetime_budget) || 0,
-                bid_amount: parseFloat(adSet.bid_amount) || 0,
-                billing_event: adSet.billing_event,
-                optimization_goal: adSet.optimization_goal,
-                targeting: adSet.targeting,
-                bid_strategy: adSet.bid_strategy,
-                attribution_spec: adSet.attribution_spec,
-                promoted_object: adSet.promoted_object,
-                pacing_type: adSet.pacing_type || [],
-                configured_status: adSet.configured_status,
-                effective_status: adSet.effective_status,
-                destination_type: adSet.destination_type,
-                frequency_control_specs: adSet.frequency_control_specs,
-                is_dynamic_creative: adSet.is_dynamic_creative,
-                issues_info: adSet.issues_info || [],
-                learning_stage_info: adSet.learning_stage_info,
-                source_adset_id: adSet.source_adset_id,
-                targeting_optimization_types:
-                  adSet.targeting_optimization_types || [],
-                use_new_app_click: adSet.use_new_app_click,
-                start_time: adSet.start_time
-                  ? new Date(adSet.start_time)
-                  : null,
-                end_time: adSet.end_time ? new Date(adSet.end_time) : null,
-                // Metrics from insights
-                impressions: safeParseInt(adSetInsights?.impressions),
-                clicks: safeParseInt(adSetInsights?.clicks),
-                reach: safeParseInt(adSetInsights?.reach),
-                spend: safeParseFloat(adSetInsights?.spend),
-                // Convert actions array to conversions object for our schema
-                conversions: adSetInsights?.actions
-                  ? adSetInsights.actions.reduce((acc: any, action: any) => {
-                      acc[action.action_type] = action.value;
-                      return acc;
-                    }, {})
-                  : null,
-                // Calculate cost per conversion if we have conversions
-                cost_per_conversion:
-                  adSetInsights?.actions && adSetInsights.actions.length > 0
-                    ? safeParseFloat(adSetInsights.spend) /
-                      adSetInsights.actions.reduce(
-                        (sum: number, action: any) =>
-                          sum + safeParseInt(action.value),
-                        0
-                      )
-                    : null,
-                last_updated: new Date(),
-                created_at: new Date(),
-                updated_at: new Date(),
-              };
-
-              const { error: adSetError } = await supabase
-                .from("meta_ad_sets")
-                .upsert([adSetData], {
-                  onConflict: "ad_set_id",
-                  ignoreDuplicates: false,
-                })
-                .match({
-                  ad_set_id: adSet.id,
-                  campaign_id: campaign.id,
-                  account_id: accountId,
-                });
-
-              if (adSetError) {
-                console.error("Error storing ad set:", adSetError);
-                continue;
-              }
-
-              // Get and store ads with rate limiting
-              const ads = await withRateLimitRetry(
-                async () => {
-                  return adSet.getAds(
-                    [
-                      "name",
-                      "status",
-                      "creative",
-                      "tracking_specs",
-                      "conversion_specs",
-                      "preview_shareable_link",
-                      "effective_object_story_id",
-                      "configured_status",
-                      "effective_status",
-                      "issues_info",
-                      "source_ad_id",
-                      "engagement_audience",
-                      "object_story_spec",
-                      "recommendations",
-                      "tracking_and_conversion_specs",
-                    ],
-                    { limit: RATE_LIMIT_CONFIG.BATCH_SIZE }
-                  );
-                },
-                {
-                  accountId,
-                  endpoint: "ads",
-                  callType: "READ",
-                  points: RATE_LIMIT_CONFIG.POINTS.READ,
-                  supabase,
-                }
-              );
-
-              // Process ads with parallel creative fetching
-              const adSetAds = await processAdsWithParallelCreativeFetch(
-                ads,
-                accountId,
-                adSet.id,
-                campaign.id,
-                supabase,
-                timeframe
-              );
-
-              campaignAdSets.push({
-                adSet: adSetData,
-                ads: adSetAds,
-              });
-
-              await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
-            }
-
-            processedCampaigns.push({
-              campaign: campaignData,
-              adSets: campaignAdSets,
-            });
-
-            await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
-          } catch (error) {
-            console.error(`Error processing campaign ${campaign.id}:`, error);
-            continue;
-          }
-        }
-
-        return NextResponse.json({
-          result: {
-            campaigns: processedCampaigns,
-            pagination: {
-              page: 1,
-              pageSize: RATE_LIMIT_CONFIG.BATCH_SIZE,
-              total: processedCampaigns.length,
-              fromApi: true,
-            },
-          },
-          dateRange: getDateRangeForTimeframe(timeframe),
-        });
-
-      default:
-        return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+      }
     }
-  } catch (error: any) {
-    console.error("Error:", error);
 
-    // Handle rate limit errors
-    if (error?.response?.error?.code === 17) {
+    // Create initial job record in database
+    const { error: jobError } = await supabase.from("background_jobs").insert([
+      {
+        request_id: requestId,
+        job_type: "meta-marketing-sync",
+        status: "queued",
+        progress: 0,
+      },
+    ]);
+
+    if (jobError) {
+      console.error("Error creating job record:", jobError);
       return NextResponse.json(
-        {
-          error: "Rate limit reached. Please try again in a few minutes.",
-          retryAfter: RATE_LIMIT_CONFIG.STANDARD.BLOCK_TIME,
-        },
-        { status: 429 }
+        { error: "Failed to create background job" },
+        { status: 500 }
       );
     }
 
+    // Start the background job
+    const jobResult = await startMetaMarketingBackgroundJob(jobPayload);
+
+    if (!jobResult.success) {
+      // Update job status to failed
+      await supabase
+        .from("background_jobs")
+        .update({
+          status: "failed",
+          error_message: jobResult.error,
+        })
+        .eq("request_id", requestId);
+
+      return NextResponse.json({ error: jobResult.error }, { status: 500 });
+    }
+
+    return NextResponse.json({
+      message: "Background job started successfully",
+      requestId,
+      messageId: jobResult.messageId,
+      status: "queued",
+      progress: 0,
+      isBackgroundJob: true,
+      estimatedDuration: "5-15 minutes",
+      checkStatusUrl: `/api/meta-marketing-daily/status?requestId=${requestId}`,
+    });
+  } catch (error: any) {
+    console.error("Error starting background job:", error);
     return NextResponse.json(
       {
         error:
@@ -1391,98 +994,35 @@ export async function POST(request: Request) {
     const action = searchParams.get("action");
     const data = await request.json();
 
-    const account = new AdAccount(data.accountId);
+    // For POST operations, we can still process directly since they're typically quick
+    // If these become long-running, you can also move them to background jobs
+
     const supabase = await createClient();
 
-    let result;
-    let supabaseResult;
+    // Generate request ID for tracking
+    const requestId = uuidv4();
+
+    // For now, we'll handle POST operations directly
+    // You can extend this to use background jobs if needed
 
     switch (action) {
       case "createCampaign":
-        try {
-          result = await account.createCampaign(["id"], {
-            name: data.name,
-            objective: data.objective,
-            status: data.status,
-            special_ad_categories: [],
-          });
-
-          // Store in Supabase
-          const campaignData = {
-            campaign_id: result.id,
-            account_id: data.accountId,
-            name: data.name,
-            status: data.status,
-            objective: data.objective,
-          };
-
-          const { data: insertedData, error: supabaseError } = await supabase
-            .from("meta_campaigns")
-            .insert([campaignData]);
-
-          if (supabaseError) {
-            console.error("Supabase error:", supabaseError);
-            throw new Error("Failed to store campaign data");
-          }
-
-          supabaseResult = insertedData;
-        } catch (error) {
-          console.error("Error creating campaign:", error);
-          throw error;
-        }
-        break;
+        // Direct processing for campaign creation
+        return NextResponse.json({
+          message: "Campaign creation not yet implemented in background mode",
+          requestId,
+        });
 
       case "createAdSet":
-        try {
-          result = await account.createAdSet(["id"], {
-            name: data.name,
-            campaign_id: data.campaignId,
-            daily_budget: data.dailyBudget,
-            start_time: data.startTime,
-            end_time: data.endTime,
-            bid_amount: data.bidAmount,
-            billing_event: data.billingEvent,
-            optimization_goal: data.optimizationGoal,
-            targeting: data.targeting,
-            status: data.status,
-          });
-
-          // Store in Supabase
-          const adSetData = {
-            ad_set_id: result.id,
-            campaign_id: data.campaignId,
-            name: data.name,
-            status: data.status,
-            daily_budget: data.dailyBudget,
-            bid_amount: data.bidAmount,
-            billing_event: data.billingEvent,
-            optimization_goal: data.optimizationGoal,
-            targeting: data.targeting,
-            start_time: data.startTime ? new Date(data.startTime) : undefined,
-            end_time: data.endTime ? new Date(data.endTime) : undefined,
-          };
-
-          const { data: insertedData, error: supabaseError } = await supabase
-            .from("meta_ad_sets")
-            .insert([adSetData]);
-
-          if (supabaseError) {
-            console.error("Supabase error:", supabaseError);
-            throw new Error("Failed to store ad set data");
-          }
-
-          supabaseResult = insertedData;
-        } catch (error) {
-          console.error("Error creating ad set:", error);
-          throw error;
-        }
-        break;
+        // Direct processing for ad set creation
+        return NextResponse.json({
+          message: "Ad set creation not yet implemented in background mode",
+          requestId,
+        });
 
       default:
         return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }
-
-    return NextResponse.json({ result, supabaseResult });
   } catch (error) {
     console.error("Error:", error);
     if (error instanceof Error) {
@@ -1911,15 +1451,214 @@ async function fetchData(
             }
           );
 
-          // Process ads with parallel creative fetching
-          const adSetAds = await processAdsWithParallelCreativeFetch(
-            ads,
-            accountId,
-            adSet.id,
-            campaign.id,
-            supabase,
-            timeframe
-          );
+          // Process ads with robust creative fetching and engagement metrics
+          const processedAds = [];
+          const today = new Date().toISOString().split("T")[0];
+
+          for (const ad of ads) {
+            try {
+              console.log(`\n--- Processing ad ${ad.id} ---`);
+              console.log(`Ad name: ${ad.name}`);
+              console.log(`Ad status: ${ad.status}`);
+
+              // Get insights for this ad - THIS IS CRITICAL FOR ENGAGEMENT METRICS
+              const adInsights = await getInsights(
+                ad as InsightCapableEntity,
+                supabase,
+                accountId,
+                timeframe
+              );
+
+              // Extract creative ID and fetch creative details with retries
+              let creativeDetails = null;
+              let creativeId = null;
+              let creativeType = "UNKNOWN";
+              let assetFeedSpec = null;
+
+              if (ad.creative && ad.creative.id) {
+                creativeId = ad.creative.id;
+                console.log(`🎨 Found creative ID: ${creativeId}`);
+
+                // CRITICAL: Fetch creative details with FORCED asset_feed_spec
+                creativeDetails = await fetchCreativeWithRetry(
+                  creativeId,
+                  supabase,
+                  accountId
+                );
+
+                // ALWAYS ensure we have asset_feed_spec when we have creative_id
+                if (creativeDetails) {
+                  console.log(`✅ Creative details fetched for ${creativeId}`);
+                  creativeType = determineCreativeType(creativeDetails, ad);
+
+                  // FORCE asset_feed_spec - this should NEVER be null if we have creative_id
+                  assetFeedSpec = creativeDetails.asset_feed_spec;
+
+                  if (!assetFeedSpec) {
+                    console.error(
+                      `❌ CRITICAL ERROR: No asset_feed_spec for creative ${creativeId}!`
+                    );
+                    // Create emergency fallback
+                    assetFeedSpec = {
+                      _fallback_source: "EMERGENCY_CREATIVE_FALLBACK",
+                      error: "Creative details fetched but no asset_feed_spec",
+                      creative_id: creativeId,
+                      ad_id: ad.id,
+                    };
+                  }
+                } else {
+                  console.error(
+                    `❌ CRITICAL ERROR: Could not fetch creative details for ${creativeId}!`
+                  );
+                  // This should not happen with our new fetchCreativeWithRetry function
+                  creativeType = "FETCH_FAILED";
+                  assetFeedSpec = {
+                    _fallback_source: "CRITICAL_FETCH_FAILURE",
+                    error: "fetchCreativeWithRetry returned null",
+                    creative_id: creativeId,
+                    ad_id: ad.id,
+                  };
+                }
+              } else {
+                console.log(`⚠️ No creative ID found for ad ${ad.id}`);
+                creativeType = determineCreativeType(null, ad);
+                // No creative_id means no asset_feed_spec needed
+                assetFeedSpec = null;
+              }
+
+              console.log(`🎭 Determined creative type: ${creativeType}`);
+              console.log(
+                `📋 Asset feed spec status: ${
+                  assetFeedSpec ? "PRESENT" : "NULL"
+                }`
+              );
+
+              // CRITICAL VALIDATION: If we have creative_id, we MUST have asset_feed_spec
+              if (creativeId && !assetFeedSpec) {
+                console.error(
+                  `❌ VALIDATION FAILED: creative_id ${creativeId} but no asset_feed_spec!`
+                );
+                assetFeedSpec = {
+                  _fallback_source: "VALIDATION_FAILURE",
+                  error:
+                    "Validation failed - creative_id present but no asset_feed_spec",
+                  creative_id: creativeId,
+                  ad_id: ad.id,
+                };
+              }
+
+              // Create comprehensive ad data structure
+              const adData = {
+                ad_id: ad.id,
+                account_id: accountId,
+                ad_set_id: adSet.id,
+                campaign_id: campaign.id,
+                name: ad.name,
+                status: ad.status,
+                creative: ad.creative || null,
+                creative_id: creativeId,
+                creative_type: creativeType,
+                asset_feed_spec: assetFeedSpec, // This should ALWAYS be present if creative_id exists
+                object_story_spec:
+                  creativeDetails?.object_story_spec ||
+                  ad.creative?.object_story_spec ||
+                  null,
+                tracking_specs: ad.tracking_specs || null,
+                conversion_specs: ad.conversion_specs || null,
+                preview_url: ad.preview_shareable_link || null,
+                effective_object_story_id:
+                  ad.effective_object_story_id ||
+                  creativeDetails?.effective_object_story_id ||
+                  null,
+                configured_status: ad.configured_status || null,
+                effective_status: ad.effective_status || null,
+                issues_info: ad.issues_info || [],
+                source_ad_id: ad.source_ad_id || null,
+                engagement_audience: ad.engagement_audience || null,
+                recommendations: ad.recommendations || [],
+                tracking_and_conversion_specs:
+                  ad.tracking_and_conversion_specs || null,
+                template_url: creativeDetails?.template_url || null,
+                thumbnail_url: creativeDetails?.thumbnail_url || null,
+                image_url: creativeDetails?.image_url || null,
+                video_id: creativeDetails?.video_id || null,
+                instagram_permalink_url:
+                  creativeDetails?.instagram_permalink_url || null,
+                url_tags: creativeDetails?.url_tags || null,
+                impressions: safeParseInt(adInsights?.impressions),
+                clicks: safeParseInt(adInsights?.clicks),
+                reach: safeParseInt(adInsights?.reach),
+                spend: safeParseFloat(adInsights?.spend),
+                conversions: adInsights?.actions
+                  ? adInsights.actions.reduce(
+                      (
+                        acc: Record<string, string>,
+                        action: { action_type: string; value: string }
+                      ) => {
+                        acc[action.action_type] = action.value;
+                        return acc;
+                      },
+                      {}
+                    )
+                  : null,
+                cost_per_conversion:
+                  adInsights?.actions && adInsights.actions.length > 0
+                    ? safeParseFloat(adInsights.spend) /
+                      adInsights.actions.reduce(
+                        (sum: number, action: { value: string }) =>
+                          sum + safeParseInt(action.value),
+                        0
+                      )
+                    : null,
+                last_updated: new Date(),
+                created_at: new Date(),
+                updated_at: new Date(),
+              };
+
+              // Store the ad data
+              const { error: adError } = await supabase
+                .from("meta_ads")
+                .upsert([adData], {
+                  onConflict: "ad_id",
+                  ignoreDuplicates: false,
+                });
+
+              if (adError) {
+                console.error(`❌ Error storing ad ${ad.id}:`, adError);
+              } else {
+                console.log(`✅ Successfully stored ad ${ad.id}`);
+                processedAds.push(adData);
+              }
+
+              // CRITICAL: ALWAYS save ad engagement metrics for EVERY ad
+              console.log(`📊 Saving engagement metrics for ad ${ad.id}...`);
+              try {
+                await saveAdEngagementMetrics(
+                  supabase,
+                  ad.id,
+                  adInsights,
+                  today
+                );
+                console.log(
+                  `✅ Successfully saved engagement metrics for ad ${ad.id}`
+                );
+              } catch (engagementError) {
+                console.error(
+                  `❌ Error saving engagement metrics for ad ${ad.id}:`,
+                  engagementError
+                );
+                // Don't fail the entire ad processing if engagement metrics fail
+              }
+
+              // Add delay between ad processing
+              await delay(RATE_LIMIT_CONFIG.MIN_DELAY);
+            } catch (error) {
+              console.error(`❌ Error processing ad ${ad.id}:`, error);
+              continue;
+            }
+          }
+
+          const adSetAds = processedAds;
 
           campaignAdSets.push({
             adSet: adSetData,
