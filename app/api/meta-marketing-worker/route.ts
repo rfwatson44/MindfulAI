@@ -1268,6 +1268,68 @@ async function processCampaignsPhase(
           }))
         );
       }
+
+      // 🔍 ENHANCED DEBUGGING: Get detailed breakdown of what's in the account
+      console.log("🔍 === ACCOUNT BREAKDOWN ANALYSIS ===");
+
+      for (const campaign of campaignSummary.slice(0, 6)) {
+        try {
+          // Get ad sets count for this campaign
+          const adSets = await withRateLimitRetry(
+            async () => {
+              const campaignObj = new Campaign(campaign.id);
+              return campaignObj.getAdSets(["id", "name", "status"], {
+                limit: 1000,
+              });
+            },
+            {
+              accountId,
+              endpoint: `campaign_${campaign.id}_adsets`,
+              callType: "READ",
+              points: RATE_LIMIT_CONFIG.POINTS.READ,
+              supabase,
+            }
+          );
+
+          // Get ads count for this campaign
+          const ads = await withRateLimitRetry(
+            async () => {
+              const campaignObj = new Campaign(campaign.id);
+              return campaignObj.getAds(["id", "name", "status"], {
+                limit: 1000,
+              });
+            },
+            {
+              accountId,
+              endpoint: `campaign_${campaign.id}_ads`,
+              callType: "READ",
+              points: RATE_LIMIT_CONFIG.POINTS.READ,
+              supabase,
+            }
+          );
+
+          console.log(`🔍 Campaign: ${campaign.name} (${campaign.status})`);
+          console.log(`   └── Ad Sets: ${adSets.length}`);
+          console.log(`   └── Ads: ${ads.length}`);
+
+          if (adSets.length > 0) {
+            console.log(`   └── Ad Set Details:`);
+            adSets.slice(0, 3).forEach((adSet: any, idx: number) => {
+              console.log(`       ${idx + 1}. ${adSet.name} (${adSet.status})`);
+            });
+            if (adSets.length > 3) {
+              console.log(`       ... and ${adSets.length - 3} more ad sets`);
+            }
+          }
+        } catch (detailError) {
+          console.warn(
+            `🔍 Could not get details for campaign ${campaign.name}:`,
+            detailError
+          );
+        }
+      }
+
+      console.log("🔍 === END ACCOUNT BREAKDOWN ===");
     } catch (summaryError) {
       console.warn("🔍 Could not get campaign summary:", summaryError);
     }
