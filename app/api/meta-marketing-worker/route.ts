@@ -575,6 +575,18 @@ async function getInsights(
 
 // Main background job handler with chunked processing
 async function handler(request: Request) {
+  // 🚨 EMERGENCY CIRCUIT BREAKER - STOP ALL PROCESSING
+  console.log("🚨 CIRCUIT BREAKER ACTIVATED - STOPPING ALL PROCESSING");
+  return Response.json(
+    {
+      success: false,
+      error: "Worker temporarily disabled for debugging",
+      circuitBreaker: true,
+      timestamp: new Date().toISOString(),
+    },
+    { status: 503 }
+  );
+
   const supabase = await createClient();
   const startTime = Date.now();
 
