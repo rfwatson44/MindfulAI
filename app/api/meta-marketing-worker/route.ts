@@ -1218,24 +1218,9 @@ async function processCampaignsPhase(
     // Get campaigns with comprehensive fields and NO FILTERING
     const campaignOptions: any = {
       limit: 100, // Increased to 100 to match ads and adsets limits for better throughput
-      // 🚨 CRITICAL FIX: Include ALL campaign statuses
-      filtering: [
-        {
-          field: "delivery_info.delivery_status",
-          operator: "IN",
-          value: [
-            "active",
-            "paused",
-            "deleted",
-            "pending_review",
-            "disapproved",
-            "preapproved",
-            "pending_billing_info",
-            "campaign_paused",
-            "archived",
-          ],
-        },
-      ],
+      // 🚨 CRITICAL FIX: Remove unsupported filtering field
+      // Facebook API doesn't support 'delivery_info.delivery_status' for filtering
+      // We'll fetch all campaigns and filter by status in code if needed
     };
 
     // Only add after parameter if it's not empty and looks like a valid cursor
