@@ -674,6 +674,26 @@ async function getInsights(
 
 // Main background job handler with chunked processing
 async function handler(request: Request) {
+  // 🚨 GLOBAL KILL SWITCH - STOPS ALL PROCESSING IMMEDIATELY
+  // This will stop ALL existing jobs in the queue, not just new ones
+  if (process.env.GLOBAL_WORKER_KILL_SWITCH === "true") {
+    console.log(
+      "🚨 GLOBAL KILL SWITCH ACTIVATED - STOPPING ALL WORKER PROCESSING"
+    );
+    console.log("🛑 This includes existing queued jobs and new requests");
+    return Response.json(
+      {
+        success: false,
+        error: "All worker processing has been globally disabled",
+        killSwitch: true,
+        globalStop: true,
+        timestamp: new Date().toISOString(),
+        message: "Set GLOBAL_WORKER_KILL_SWITCH=false to re-enable",
+      },
+      { status: 503 }
+    );
+  }
+
   const supabase = await createClient();
   const startTime = Date.now();
 
