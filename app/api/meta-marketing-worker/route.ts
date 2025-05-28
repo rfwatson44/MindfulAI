@@ -1426,13 +1426,14 @@ async function processCampaignsPhase(
             async () => {
               return account.getCampaigns(campaignFields, {
                 limit: 500,
-                filtering: [
-                  {
-                    field: "status",
-                    operator: "IN",
-                    value: ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"],
-                  },
-                ],
+                // 🚨 REMOVED: Facebook API doesn't support 'status' filtering for campaigns
+                // filtering: [
+                //   {
+                //     field: "status",
+                //     operator: "IN",
+                //     value: ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"],
+                //   },
+                // ],
               });
             },
             {
@@ -1444,12 +1445,12 @@ async function processCampaignsPhase(
             }
           );
           console.log(
-            `🔄 FALLBACK 2: Retrieved ${fallbackCampaigns2.length} campaigns with status filtering`
+            `🔄 FALLBACK 2: Retrieved ${fallbackCampaigns2.length} campaigns without filtering`
           );
 
           if (fallbackCampaigns2.length > finalCampaigns.length) {
             console.log(
-              "✅ FALLBACK 2: Using status-filtered results (more campaigns found)"
+              "✅ FALLBACK 2: Using unfiltered results (more campaigns found)"
             );
             finalCampaigns = fallbackCampaigns2;
           }
@@ -2202,19 +2203,22 @@ async function processAdsetsPhase(
         );
 
         try {
-          console.log("🔄 ADSETS FALLBACK: Trying with status filtering...");
+          console.log(
+            "🔄 ADSETS FALLBACK: Trying without filtering (increased limit)..."
+          );
           const fallbackAdsets = await withRateLimitRetry(
             async () => {
               const campaign = new Campaign(campaignId);
               return campaign.getAdSets(adsetFields, {
                 limit: 500,
-                filtering: [
-                  {
-                    field: "status",
-                    operator: "IN",
-                    value: ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"],
-                  },
-                ],
+                // 🚨 REMOVED: Facebook API doesn't support 'status' filtering for adsets
+                // filtering: [
+                //   {
+                //     field: "status",
+                //     operator: "IN",
+                //     value: ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"],
+                //   },
+                // ],
               });
             },
             {
@@ -2239,12 +2243,12 @@ async function processAdsetsPhase(
           }
 
           console.log(
-            `🔄 ADSETS FALLBACK: Retrieved ${fallbackAdsetsArray.length} adsets with status filtering`
+            `🔄 ADSETS FALLBACK: Retrieved ${fallbackAdsetsArray.length} adsets without filtering`
           );
 
           if (fallbackAdsetsArray.length > adsets.length) {
             console.log(
-              "✅ ADSETS FALLBACK: Using status-filtered results (more adsets found)"
+              "✅ ADSETS FALLBACK: Using unfiltered results (more adsets found)"
             );
             adsets = fallbackAdsetsArray;
             totalAdsetsFound =
@@ -3166,19 +3170,22 @@ async function processAdsPhase(
         );
 
         try {
-          console.log("🔄 ADS FALLBACK: Trying with status filtering...");
+          console.log(
+            "🔄 ADS FALLBACK: Trying without filtering (increased limit)..."
+          );
           const fallbackAds = await withRateLimitRetry(
             async () => {
               const adset = new AdSet(adsetId);
               return adset.getAds(adFields, {
                 limit: 500,
-                filtering: [
-                  {
-                    field: "status",
-                    operator: "IN",
-                    value: ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"],
-                  },
-                ],
+                // 🚨 REMOVED: Facebook API doesn't support 'status' filtering for ads
+                // filtering: [
+                //   {
+                //     field: "status",
+                //     operator: "IN",
+                //     value: ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"],
+                //   },
+                // ],
               });
             },
             {
@@ -3191,12 +3198,12 @@ async function processAdsPhase(
           );
 
           console.log(
-            `🔄 ADS FALLBACK: Retrieved ${fallbackAds.length} ads with status filtering`
+            `🔄 ADS FALLBACK: Retrieved ${fallbackAds.length} ads without filtering`
           );
 
           if (fallbackAds.length > ads.length) {
             console.log(
-              "✅ ADS FALLBACK: Using status-filtered results (more ads found)"
+              "✅ ADS FALLBACK: Using unfiltered results (more ads found)"
             );
             finalAds = fallbackAds;
           }
