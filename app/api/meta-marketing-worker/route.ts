@@ -57,12 +57,16 @@ const RATE_LIMIT_CONFIG = {
     WRITE: 3,
     INSIGHTS: 2,
   },
-  BATCH_SIZE: 100, // Significantly increased from 25 to 100 for much better throughput
-  MIN_DELAY: 100, // Reduced delay for faster processing
-  BURST_DELAY: 300, // Reduced burst delay
-  INSIGHTS_DELAY: 600, // Reduced insights delay
-  MAX_PROCESSING_TIME: 80000, // Increased to 80 seconds for more data processing
-  SAFETY_BUFFER: 5000, // Reduced safety buffer for more processing time
+  BATCH_SIZE: 50, // Reduced from 100 to 50 to prevent overwhelming the API
+  MIN_DELAY: 200, // Increased from 100 to 200ms for more conservative pacing
+  BURST_DELAY: 500, // Increased from 300 to 500ms to reduce burst requests
+  INSIGHTS_DELAY: 1000, // Increased from 600 to 1000ms for insights (most expensive calls)
+  MAX_PROCESSING_TIME: 80000, // Keep at 80 seconds
+  SAFETY_BUFFER: 5000, // Keep safety buffer
+  // New: Additional delays for specific operations
+  CAMPAIGN_DELAY: 300, // Delay between campaign processing
+  ADSET_DELAY: 400, // Delay between adset processing
+  AD_DELAY: 500, // Delay between ad processing (most intensive)
 };
 
 // Meta API configuration
@@ -436,7 +440,7 @@ async function withRateLimitRetry<T>(
   }
 ): Promise<T> {
   let retries = 0;
-  const maxRetries = 5;
+  const maxRetries = 8; // Increased from 5 to 8 for better resilience
 
   while (true) {
     try {
@@ -445,20 +449,51 @@ async function withRateLimitRetry<T>(
       return result;
     } catch (error: any) {
       const errorCode = error?.response?.error?.code;
+      const errorSubcode = error?.response?.error?.error_subcode;
       const isRateLimit = [17, 80000, 80003, 80004, 4, 613].includes(
         errorCode || 0
       );
 
-      if (isRateLimit && retries < maxRetries) {
-        const backoffDelay = Math.min(1000 * Math.pow(2, retries), 30000);
-        console.log(
-          `Rate limit hit. Waiting ${backoffDelay}ms before retry ${
-            retries + 1
-          }/${maxRetries}...`
-        );
+      // Special handling for "User request limit reached" error
+      const isUserRequestLimit = errorCode === 17 && errorSubcode === 2446079;
+
+      if ((isRateLimit || isUserRequestLimit) && retries < maxRetries) {
+        let backoffDelay;
+
+        if (isUserRequestLimit) {
+          // More aggressive backoff for "User request limit reached"
+          // Start with 30 seconds and exponentially increase up to 5 minutes
+          backoffDelay = Math.min(30000 * Math.pow(2, retries), 300000);
+          console.log(
+            `🚨 Facebook API User Request Limit Reached (Error 17-2446079). Waiting ${
+              backoffDelay / 1000
+            }s before retry ${retries + 1}/${maxRetries}...`
+          );
+        } else {
+          // Standard rate limit backoff
+          backoffDelay = Math.min(1000 * Math.pow(2, retries), 30000);
+          console.log(
+            `⏳ Rate limit hit (Error ${errorCode}). Waiting ${backoffDelay}ms before retry ${
+              retries + 1
+            }/${maxRetries}...`
+          );
+        }
+
         await delay(backoffDelay);
         retries++;
         continue;
+      }
+
+      // If it's a rate limit error but we've exhausted retries, log it clearly
+      if (isRateLimit || isUserRequestLimit) {
+        console.error(
+          `❌ Rate limit error after ${maxRetries} retries. Error code: ${errorCode}, subcode: ${errorSubcode}`
+        );
+        console.error(
+          `❌ Error message: ${
+            error?.response?.error?.message || error.message
+          }`
+        );
       }
 
       throw error;
@@ -1691,7 +1726,7 @@ async function processCampaignsPhase(
           campaignIds.push(campaign.id);
         }
 
-        await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
+        await delay(RATE_LIMIT_CONFIG.CAMPAIGN_DELAY);
       } catch (error: any) {
         console.error(`❌ Error processing campaign ${campaign.id}:`, error);
         console.error(`❌ Error stack:`, error.stack);
@@ -2424,7 +2459,7 @@ async function processAdsetsPhase(
           }
 
           // Small delay between adsets
-          await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
+          await delay(RATE_LIMIT_CONFIG.ADSET_DELAY);
         } catch (error: any) {
           console.error(`❌ Error processing adset ${adset.id}:`, error);
           console.error(`❌ Error stack:`, error.stack);
@@ -2434,7 +2469,7 @@ async function processAdsetsPhase(
       }
 
       // Delay between campaigns
-      await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
+      await delay(RATE_LIMIT_CONFIG.CAMPAIGN_DELAY);
     } catch (error: any) {
       console.error(`❌ Error processing campaign ${campaignId}:`, error);
       console.error(`❌ Error stack:`, error.stack);
@@ -3450,7 +3485,7 @@ async function processAdsPhase(
             // Don't fail the entire ad processing if engagement metrics fail
           }
 
-          await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
+          await delay(RATE_LIMIT_CONFIG.AD_DELAY);
         } catch (error: any) {
           console.error(`❌ Error processing ad ${ad.id}:`, error);
           console.error(`❌ Error stack:`, error.stack);
@@ -3459,7 +3494,7 @@ async function processAdsPhase(
         }
       }
 
-      await delay(RATE_LIMIT_CONFIG.BURST_DELAY);
+      await delay(RATE_LIMIT_CONFIG.AD_DELAY);
     } catch (error) {
       console.error(`Error getting ads for adset ${adsetId}:`, error);
       continue;
