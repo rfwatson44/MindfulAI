@@ -103,6 +103,7 @@ interface ChunkedJobPayload {
   totalItems?: number;
   processedItems?: number;
   accountInfo?: string; // JSON string for passing account info between phases
+  iteration?: number; // Added iteration property
 }
 
 // Job status tracking
@@ -195,6 +196,24 @@ async function checkJobCancellation(
 // Create follow-up job for next phase
 async function createFollowUpJob(payload: ChunkedJobPayload) {
   try {
+    // Increment iteration counter to prevent infinite loops
+    const nextIteration = (payload.iteration || 0) + 1;
+    const maxIterations = parseInt(process.env.MAX_WORKER_ITERATIONS || "50");
+
+    if (nextIteration >= maxIterations) {
+      console.log(
+        `🛑 PREVENTING INFINITE LOOP: Would exceed max iterations (${maxIterations})`
+      );
+      console.log(
+        `Current iteration: ${
+          payload.iteration || 0
+        }, Next would be: ${nextIteration}`
+      );
+      throw new Error(
+        `Maximum iterations reached (${maxIterations}). Preventing infinite loop.`
+      );
+    }
+
     const baseUrl =
       process.env.WEBHOOK_BASE_URL ||
       (process.env.VERCEL_PROJECT_PRODUCTION_URL
@@ -203,22 +222,38 @@ async function createFollowUpJob(payload: ChunkedJobPayload) {
 
     const webhookUrl = `${baseUrl}/api/meta-marketing-worker`;
 
-    console.log("Creating follow-up job:", payload);
+    const jobPayload = {
+      ...payload,
+      iteration: nextIteration, // Increment iteration
+    };
+
+    console.log("Creating follow-up job:", {
+      phase: jobPayload.phase,
+      iteration: nextIteration,
+      maxIterations,
+      requestId: jobPayload.requestId,
+      after: jobPayload.after || "none",
+      campaignIds: jobPayload.campaignIds?.length || 0,
+      adsetIds: jobPayload.adsetIds?.length || 0,
+    });
 
     const response = await qstashClient.publishJSON({
       url: webhookUrl,
-      body: payload,
+      body: jobPayload,
       retries: 3,
       delay: 2, // 2 seconds delay between chunks
       headers: {
         "Content-Type": "application/json",
         "X-Job-Type": "meta-marketing-sync-chunk",
-        "X-Request-ID": payload.requestId,
-        "X-Phase": payload.phase || "unknown",
+        "X-Request-ID": jobPayload.requestId,
+        "X-Phase": jobPayload.phase || "unknown",
+        "X-Iteration": nextIteration.toString(),
       },
     });
 
-    console.log("Follow-up job created:", response.messageId);
+    console.log(
+      `Follow-up job created: ${response.messageId} (iteration ${nextIteration})`
+    );
     return response;
   } catch (error) {
     console.error("Error creating follow-up job:", error);
@@ -575,22 +610,24 @@ async function getInsights(
 
 // Main background job handler with chunked processing
 async function handler(request: Request) {
-  // 🚨 EMERGENCY CIRCUIT BREAKER - STOP ALL PROCESSING
-  console.log("🚨 CIRCUIT BREAKER ACTIVATED - STOPPING ALL PROCESSING");
-  return Response.json(
-    {
-      success: false,
-      error: "Worker temporarily disabled for debugging",
-      circuitBreaker: true,
-      timestamp: new Date().toISOString(),
-    },
-    { status: 503 }
-  );
-
   const supabase = await createClient();
   const startTime = Date.now();
 
   try {
+    // 🚨 EMERGENCY DISABLE SWITCH
+    if (process.env.WORKER_DISABLED === "true") {
+      console.log("🚨 WORKER DISABLED via environment variable");
+      return Response.json(
+        {
+          success: false,
+          error: "Worker is disabled via WORKER_DISABLED environment variable",
+          disabled: true,
+          timestamp: new Date().toISOString(),
+        },
+        { status: 503 }
+      );
+    }
+
     console.log("=== QStash Worker Started ===");
     console.log("Request headers:", {
       "content-type": request.headers.get("content-type"),
@@ -600,6 +637,38 @@ async function handler(request: Request) {
 
     const payload: ChunkedJobPayload = await request.json();
     console.log("Background job started with payload:", payload);
+
+    // 🛡️ SAFETY CHECKS TO PREVENT INFINITE LOOPS
+    const maxIterations = parseInt(process.env.MAX_WORKER_ITERATIONS || "50");
+    const currentIteration = payload.iteration || 0;
+
+    if (currentIteration >= maxIterations) {
+      console.log(
+        `🛑 SAFETY STOP: Reached maximum iterations (${maxIterations})`
+      );
+      await updateJobStatus(
+        supabase,
+        payload.requestId,
+        "completed",
+        100,
+        undefined,
+        {
+          message: "Job completed due to safety iteration limit",
+          reason: "max_iterations_reached",
+          iterations: currentIteration,
+        }
+      );
+      return Response.json({
+        success: true,
+        requestId: payload.requestId,
+        status: "completed_by_safety_limit",
+        iterations: currentIteration,
+      });
+    }
+
+    console.log(
+      `🔄 Processing iteration ${currentIteration + 1}/${maxIterations}`
+    );
 
     // Validate required environment variables
     if (!process.env.META_ACCESS_TOKEN) {
@@ -620,6 +689,7 @@ async function handler(request: Request) {
     console.log(`Payload details:`, {
       phase,
       action,
+      iteration: currentIteration,
       campaignIds: payload.campaignIds?.length || 0,
       adsetIds: payload.adsetIds?.length || 0,
       after: payload.after || "none",
@@ -635,7 +705,8 @@ async function handler(request: Request) {
           supabase,
           timeframe,
           payload.requestId,
-          startTime
+          startTime,
+          currentIteration
         );
         break;
 
@@ -647,7 +718,8 @@ async function handler(request: Request) {
           timeframe,
           payload.requestId,
           payload.after || "",
-          startTime
+          startTime,
+          currentIteration
         );
         break;
 
@@ -660,7 +732,8 @@ async function handler(request: Request) {
           payload.requestId,
           payload.campaignIds || [],
           payload.after || "",
-          startTime
+          startTime,
+          currentIteration
         );
         break;
 
@@ -673,7 +746,8 @@ async function handler(request: Request) {
           payload.requestId,
           payload.adsetIds || [],
           payload.after || "",
-          startTime
+          startTime,
+          currentIteration
         );
         break;
 
@@ -687,7 +761,8 @@ async function handler(request: Request) {
             supabase,
             timeframe,
             payload.requestId,
-            startTime
+            startTime,
+            currentIteration
           );
         } else {
           throw new Error(`Invalid action/phase: ${action}/${phase}`);
@@ -699,6 +774,7 @@ async function handler(request: Request) {
       success: true,
       requestId: payload.requestId,
       phase,
+      iteration: currentIteration,
       result,
     });
   } catch (error: any) {
@@ -743,7 +819,8 @@ async function processAccountPhase(
   supabase: any,
   timeframe: string,
   requestId: string,
-  startTime: number
+  startTime: number,
+  iteration: number
 ) {
   // Check for cancellation at the start
   if (await checkJobCancellation(supabase, requestId)) {
@@ -770,6 +847,7 @@ async function processAccountPhase(
       requestId,
       phase: "account",
       after: "",
+      iteration,
     });
     return { phase: "account", status: "deferred_due_to_time_limit" };
   }
@@ -816,6 +894,7 @@ async function processAccountPhase(
       phase: "account-insights",
       accountInfo: JSON.stringify(accountInfo),
       after: "",
+      iteration,
     });
     return { phase: "account", status: "partial_completion", accountInfo };
   }
@@ -925,6 +1004,7 @@ async function processAccountPhase(
     requestId,
     phase: "campaigns",
     after: "",
+    iteration,
   });
 
   console.log("Campaigns phase job created");
@@ -944,7 +1024,8 @@ async function processCampaignsPhase(
   timeframe: string,
   requestId: string,
   after: string,
-  startTime: number
+  startTime: number,
+  iteration: number
 ) {
   // Check for cancellation at the start
   if (await checkJobCancellation(supabase, requestId)) {
@@ -967,6 +1048,7 @@ async function processCampaignsPhase(
       requestId,
       phase: "campaigns",
       after: after,
+      iteration,
     });
     return { phase: "campaigns", status: "deferred_due_to_time_limit", after };
   }
@@ -1065,6 +1147,7 @@ async function processCampaignsPhase(
           requestId,
           phase: "campaigns",
           after: nextCursor,
+          iteration,
         });
         break;
       }
@@ -1238,6 +1321,28 @@ async function processCampaignsPhase(
         const paging = campaigns.paging;
         nextCursor = paging?.cursors?.after || "";
         console.log(`Has more campaigns. Next cursor: ${nextCursor}`);
+
+        // 🛡️ SAFETY CHECK: Prevent infinite pagination with same cursor
+        if (nextCursor === after) {
+          console.log(
+            `🛑 PAGINATION SAFETY: Same cursor detected, stopping pagination`
+          );
+          console.log(`Current cursor: ${after}, Next cursor: ${nextCursor}`);
+          hasMore = false;
+          nextCursor = "";
+        }
+
+        // 🛡️ SAFETY CHECK: Limit total campaigns processed per account
+        const maxCampaignsPerAccount = parseInt(
+          process.env.MAX_CAMPAIGNS_PER_ACCOUNT || "1000"
+        );
+        if (processedCampaigns.length >= maxCampaignsPerAccount) {
+          console.log(
+            `🛑 CAMPAIGN LIMIT: Reached maximum campaigns (${maxCampaignsPerAccount})`
+          );
+          hasMore = false;
+          nextCursor = "";
+        }
       } else {
         console.log("No more campaigns to fetch");
       }
@@ -1250,10 +1355,16 @@ async function processCampaignsPhase(
       nextCursor = "";
     }
 
-    if (hasMore && !shouldCreateFollowUpJob(startTime) && nextCursor) {
+    if (
+      hasMore &&
+      !shouldCreateFollowUpJob(startTime) &&
+      nextCursor &&
+      nextCursor !== after
+    ) {
       // More campaigns to fetch
       console.log("🔄 Creating follow-up job for more campaigns");
       console.log(`Next cursor: ${nextCursor}`);
+      console.log(`Previous cursor: ${after}`);
       await createFollowUpJob({
         accountId,
         timeframe,
@@ -1261,11 +1372,23 @@ async function processCampaignsPhase(
         requestId,
         phase: "campaigns",
         after: nextCursor,
+        iteration,
       });
     } else {
       // All campaigns processed, move to adsets phase
       console.log("✅ All campaigns processed, starting adsets phase");
       console.log(`Total campaign IDs collected: ${campaignIds.length}`);
+      console.log(
+        `Reason for stopping: ${
+          !hasMore
+            ? "No more data"
+            : !nextCursor
+            ? "No cursor"
+            : nextCursor === after
+            ? "Same cursor"
+            : "Time limit"
+        }`
+      );
       await updateJobStatus(supabase, requestId, "processing", 60);
 
       if (campaignIds.length > 0) {
@@ -1277,6 +1400,7 @@ async function processCampaignsPhase(
           phase: "adsets",
           campaignIds: campaignIds,
           after: "",
+          iteration,
         });
         console.log("🚀 Adsets phase job created successfully");
       } else {
@@ -1309,7 +1433,8 @@ async function processAdsetsPhase(
   requestId: string,
   campaignIds: string[],
   after: string,
-  startTime: number
+  startTime: number,
+  iteration: number
 ) {
   console.log("=== ADSETS PHASE DEBUG START ===");
   console.log(`Account ID: ${accountId}`);
@@ -1482,6 +1607,7 @@ async function processAdsetsPhase(
         phase: "adsets",
         campaignIds: [...currentBatch.slice(i), ...remainingCampaigns],
         after: "",
+        iteration,
       });
       break;
     }
@@ -1757,6 +1883,7 @@ async function processAdsetsPhase(
       phase: "adsets",
       campaignIds: remainingCampaigns,
       after: "",
+      iteration,
     });
   } else {
     // All campaigns processed, move to ads phase
@@ -1778,6 +1905,7 @@ async function processAdsetsPhase(
         phase: "ads",
         adsetIds: adsetIds,
         after: "",
+        iteration,
       });
       console.log("🚀 Ads phase job created successfully");
     } else {
@@ -1803,7 +1931,8 @@ async function processAdsPhase(
   requestId: string,
   adsetIds: string[],
   after: string,
-  startTime: number
+  startTime: number,
+  iteration: number
 ) {
   // Check for cancellation at the start
   if (await checkJobCancellation(supabase, requestId)) {
@@ -1827,6 +1956,7 @@ async function processAdsPhase(
       phase: "ads",
       adsetIds,
       after: after,
+      iteration,
     });
     return { phase: "ads", status: "deferred_due_to_time_limit", after };
   }
@@ -2292,6 +2422,7 @@ async function processAdsPhase(
         phase: "ads",
         adsetIds,
         after: after,
+        iteration,
       });
       break;
     }
@@ -2616,6 +2747,7 @@ async function processAdsPhase(
       phase: "ads",
       adsetIds: remainingAdsetIds, // Pass remaining adsets, not all adsets
       after: after,
+      iteration,
     });
   } else {
     // All ads processed, mark as completed
