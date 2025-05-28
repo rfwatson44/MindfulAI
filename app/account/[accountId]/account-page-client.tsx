@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/utils/supabase/client";
@@ -41,7 +41,6 @@ import { Pagination } from "@/components/ui/pagination";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
 import { Ad, AdType, SelectedRange } from "@/lib/types";
-import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationPrevious, PaginationNext } from "@/components/ui/pagination"; // Pagination UI
 
 // Define pagination type
 interface PaginationInfo {
@@ -58,76 +57,13 @@ interface AccountPageClientProps {
   pagination: PaginationInfo;
 }
 
-export function AccountPageClient({ account, initialAdsData, pagination }: AccountPageClientProps) {
-  // Pagination state
-  const PAGE_SIZE = pagination?.pageSize || 25;
-  const [currentPage, setCurrentPage] = useState(pagination?.currentPage || 1);
-  const [activeTab, setActiveTab] = useState<AdType>(pagination?.activeTab || "static");
-  const [adsData, setAdsData] = useState<Ad[]>(initialAdsData || []);
-  const [selectedRange, setSelectedRange] = useState<SelectedRange | null>(null);
-  const [showAnalyzeButton, setShowAnalyzeButton] = useState(false);
-  const [isAIPanelOpen, setIsAIPanelOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isFetching, setIsFetching] = useState(false);
-  const [isInitialLoad, setIsInitialLoad] = useState(false);
-
-  // --- DEBUG: Log account and initialAdsData at component start
-  useEffect(() => {
-    console.log('[AccountPageClient] MOUNT/RENDER');
-    console.log('[AccountPageClient] account:', account);
-    console.log('[AccountPageClient] initialAdsData:', initialAdsData);
-  }, [account, initialAdsData]);
-
-  // Pagination: compute current page data
-  const totalPages = Math.ceil(adsData.length / PAGE_SIZE);
-  const paginatedAds = adsData.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
-    `Executing Supabase query: meta_ads for account ${formattedAccountId}, type ${adType}, page ${page}`
-  );
-
-  // Execute query
-  const { data, error, count } = await query;
-
-  if (error) {
-    console.error("Error fetching ads:", error);
-    throw new Error(`Error fetching ads: ${error.message}`);
-  }
-
-  // Map data to match Ad type if needed
-  console.log("Raw ads data sample:", data?.[0] || "no ads found");
-  console.log("Total raw ads count:", data?.length || 0);
-
-  // Ensure returned data has proper types
-  const mappedData = data
-    ? data.map((ad) => ({
-        ...ad,
-        // Set the type property based on creative_type for UI consumption
-        type:
-          ad.creative_type === "IMAGE"
-            ? "static"
-            : ad.creative_type === "VIDEO"
-            ? "video"
-            : "static",
-      }))
-    : [];
-
-  console.log("Mapped first ad:", mappedData[0] || "no ads mapped");
-  console.log(
-    "Types in mapped data:",
-    mappedData.map((ad) => ad.type).filter((v, i, a) => a.indexOf(v) === i)
-  );
-
-  return {
-    data: mappedData || [],
-    count: count || 0,
-  };
-};
 
 export function AccountPageClient({
   account,
   initialAdsData,
   pagination,
 }: AccountPageClientProps) {
+  console.log('[RENDER] AccountPageClient', { initialAdsData, pagination });
   const router = useRouter();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
@@ -147,13 +83,56 @@ export function AccountPageClient({
       ? initialAdsData
       : [];
 
-  const [analyzeButton, setAnalyzeButton] = useState<React.ReactNode>(null);
-  const [selectedRange, setSelectedRange] = useState<SelectedRange | null>(
-    null
-  );
->>>>>>> 7064c52107d93b76ebea54a26a8bbc5e8a05ede6
+  const [selectedRange, setSelectedRange] = useState<SelectedRange | null>(null);
   const [showAnalyzeButton, setShowAnalyzeButton] = useState(false);
   const [isAIPanelOpen, setIsAIPanelOpen] = useState(false);
+  console.log(`[DEBUG] [STATE] isAIPanelOpen:`, isAIPanelOpen, '[STATE] showAnalyzeButton:', showAnalyzeButton, '[STATE] selectedRange:', selectedRange);
+
+  // Deep debug: log state on every render
+  useEffect(() => {
+    console.log('[EFFECT][RENDER] isAIPanelOpen:', isAIPanelOpen, 'showAnalyzeButton:', showAnalyzeButton, 'selectedRange:', selectedRange);
+  });
+
+  // Real Supabase fetchAdsData implementation
+  async function fetchAdsData(
+    accountId: string,
+    page: number,
+    pageSize: number,
+    adType: AdType
+  ): Promise<{ data: Ad[]; count: number }> {
+    const formattedAccountId = `act_${accountId}`;
+    const from = (page - 1) * pageSize;
+    const to = from + pageSize - 1;
+    let query = supabase
+      .from("meta_ads")
+      .select("*", { count: "exact" })
+      .eq("account_id", formattedAccountId); // Filter by account_id
+    if (adType === "static" || adType === "video") {
+      query = query.eq("creative_type", adType === "static" ? "IMAGE" : "VIDEO");
+    }
+    query = query.range(from, to);
+    console.log("[fetchAdsData] formattedAccountId:", formattedAccountId);
+    console.log("[fetchAdsData] Query range:", { from, to });
+    const { data, error, count } = await query;
+    console.log("[fetchAdsData] Raw Supabase result:", { data, error, count });
+    if (error) {
+      console.error("Supabase meta_ads fetch error (client):", error);
+      return { data: [], count: 0 };
+    }
+    // Map creative_type to type for UI
+    const processed = data
+      ? data.map((ad) => ({
+          ...ad,
+          type:
+            ad.creative_type === "IMAGE"
+              ? "static"
+              : ad.creative_type === "VIDEO"
+              ? "video"
+              : "static",
+        }))
+      : [];
+    return { data: processed, count: count || 0 };
+  }
 
   // Use React Query to fetch data
   const {
@@ -164,7 +143,7 @@ export function AccountPageClient({
     refetch,
     isFetching,
   } = useQuery({
-    queryKey: ["ads", account.id, currentPage, activeTab],
+    queryKey: ["ads", account.id, currentPage, activeTab, initialAdsData],
     queryFn: async () => {
       console.log("Executing queryFn with:", {
         accountId: account.id,
@@ -181,13 +160,23 @@ export function AccountPageClient({
       return result;
     },
     initialData: {
-      data: safeInitialAdsData,
+      data: initialAdsData,
       count: pagination.totalItems,
     },
     refetchOnWindowFocus: false,
     staleTime: 1000 * 60 * 5, // 5 minutes
     retry: 1,
   });
+
+  // Invalidate query cache when SSR data changes (correct API)
+  useEffect(() => {
+    queryClient.invalidateQueries({ queryKey: ["ads", account.id, pagination.currentPage, activeTab, initialAdsData] });
+  }, [initialAdsData, pagination.currentPage, activeTab, account.id, queryClient]);
+
+  // Compute adsData, totalPages, paginatedAds for rendering
+  const adsData = useMemo(() => adsQueryData?.data || [], [adsQueryData]);
+  const totalPages = Math.max(1, Math.ceil((adsQueryData?.count || 0) / pagination.pageSize));
+  const paginatedAds = useMemo(() => adsData, [adsData]);
 
   // Log the query results for debugging
   useEffect(() => {
@@ -213,99 +202,9 @@ export function AccountPageClient({
       }, 300);
       return () => clearTimeout(timer);
     }
-  }, [isInitialLoad]);
-
-  // Handle tab change
-  const handleTabChange = useCallback(
-    (type: AdType) => {
-      console.log(
-        "handleTabChange called with type:",
-        type,
-        "current activeTab:",
-        activeTab
-      );
-
-      if (type === activeTab) {
-        console.log("Skipping tab change - already on this tab");
-        return; // Skip if already on this tab
-      }
-
-      // Update local state
-      console.log("Setting activeTab to:", type);
-      setActiveTab(type);
-      setCurrentPage(1);
-      setSelectedRange(null);
-
-      // Update URL params
-      const params = new URLSearchParams();
-      // Copy existing params
-      searchParams.forEach((value, key) => {
-        params.append(key, value);
-      });
-      params.set("type", type);
-      params.set("page", "1");
-
-      const newUrl = `?${params.toString()}`;
-      console.log("Navigating to:", newUrl);
-
-      // Invalidate and refetch query with new parameters
-      queryClient.invalidateQueries({ queryKey: ["ads", account.id] });
-
-      // Navigate after query invalidation
-      router.push(newUrl);
-    },
-    [
-      activeTab,
-      account.id,
-      searchParams,
-      queryClient,
-      router,
-      setSelectedRange,
-      setCurrentPage,
-    ]
-  );
-
-  // Use useEffect to handle errors and prevent infinite loops
-  useEffect(() => {
-    if (isError && queryError) {
-      setError(
-        typeof queryError === "string" ? queryError : "Failed to fetch data"
-      );
-    }
-  }, [isError, queryError]);
-
-  // Derived state
-  const adsData = adsQueryData?.data || [];
-  const totalItems = adsQueryData?.count || 0;
-  const totalPages = Math.ceil(totalItems / pagination.pageSize);
-
-  // Handle analyze click
-  const handleAnalyzeClick = () => {
-    setIsAIPanelOpen(true);
-  };
-
-<<<<<<< HEAD
-  // Debug: log whenever selectedRange changes
-  useEffect(() => {
     // console.log('[AccountPageClient] selectedRange updated:', selectedRange);
   }, [selectedRange]);
-  
-  
-  // Handle tab change
-  const handleTabChange = (type: AdType) => {
-    setActiveTab(type);
-    // Filter adsData by type
-    const filtered = (initialAdsData || []).filter((ad) => ad.type === type);
-    setAdsData(filtered);
-    setSelectedRange(null);
-    setCurrentPage(1); // Reset to first page on tab change
-  };
 
-  // Show empty state if no ads
-  const isEmpty = adsData.length === 0;
-
-  
-=======
   // Handle page change
   const handlePageChange = useCallback(
     (page: number) => {
@@ -332,11 +231,35 @@ export function AccountPageClient({
     [currentPage, account.id, activeTab, searchParams, queryClient, router]
   );
 
->>>>>>> 7064c52107d93b76ebea54a26a8bbc5e8a05ede6
+  // Handle tab change
+  const handleTabChange = useCallback(
+    (type: AdType) => {
+      console.log('[CALLBACK] handleTabChange', { type });
+      if (type === activeTab) return;
+      setActiveTab(type);
+      setCurrentPage(1);
+      setSelectedRange(null);
+      const params = new URLSearchParams(Array.from(searchParams.entries()));
+      params.set("type", type);
+      params.set("page", "1");
+      router.push(`?${params.toString()}`);
+    },
+    [activeTab, router, searchParams]
+  );
+
   // Handle selection change
   const handleSelectionChange = (selection: SelectedRange | null) => {
+    console.log('[CALLBACK] handleSelectionChange BEFORE', { selection, prevSelectedRange: selectedRange });
     setSelectedRange(selection);
+    console.log('[CALLBACK] handleSelectionChange AFTER', { selection, prevSelectedRange: selectedRange });
   };
+
+  // Handle Analyze Selected click
+  const handleAnalyzeClick = () => {
+    console.log('[CLICK] Analyze Selected');
+    setIsAIPanelOpen(true);
+  };
+
 
   // Toggle AI panel
   const toggleAIPanel = () => {
@@ -418,16 +341,20 @@ export function AccountPageClient({
         <AccountHeader account={account} />
         <div className="flex flex-row items-center gap-4 mt-4">
           <AccountTabs activeTab={activeTab} onTabChange={handleTabChange} />
-          {showAnalyzeButton && !isAIPanelOpen && (
-            <Button
-              className="ml-auto"
-              onClick={handleAnalyzeClick}
-              disabled={isLoading}
-            >
-              <Sparkles className="mr-2 h-4 w-4" /> Analyze Selected
-            </Button>
-          )}
         </div>
+        {/* Place Analyze Selected button directly under the date picker/calendar */}
+        {showAnalyzeButton && !isAIPanelOpen && (
+          <div className="mt-4">
+            <Button
+              variant="default"
+              onClick={handleAnalyzeClick}
+              className="flex items-center gap-2"
+            >
+              <Sparkles className="w-4 h-4" />
+              Analyze Selected
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="relative flex flex-1 overflow-hidden flex-col">
@@ -458,64 +385,36 @@ export function AccountPageClient({
           <AdTable
             data={paginatedAds}
             onSelectionChange={handleSelectionChange}
-            showAnalyzeButton={showAnalyzeButton}
-            setShowAnalyzeButton={setShowAnalyzeButton}
+            setShowAnalyzeButton={(show) => {
+              console.log('[PROP] setShowAnalyzeButton called', { show, prev: showAnalyzeButton });
+              setShowAnalyzeButton(show);
+            }}
             aiPanelOpen={isAIPanelOpen}
-            setAIPanelOpen={setIsAIPanelOpen}
+            setAIPanelOpen={(open) => {
+              console.log('[PROP] setAIPanelOpen called', { open, prev: isAIPanelOpen });
+              setIsAIPanelOpen(open);
+            }}
           />
-          {/* Pagination Controls */}
-          {adsData.length > PAGE_SIZE && (
+          {totalPages > 1 && (
             <div className="flex justify-center my-4">
-              <Pagination>
-                <PaginationContent>
-                  <PaginationItem>
-                    <PaginationPrevious
-                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                      aria-disabled={currentPage === 1}
-                      tabIndex={currentPage === 1 ? -1 : 0}
-                    />
-                  </PaginationItem>
-                  {Array.from({ length: totalPages }).map((_, idx) => (
-                    <PaginationItem key={idx}>
-                      <PaginationLink
-                        isActive={currentPage === idx + 1}
-                        onClick={() => setCurrentPage(idx + 1)}
-                        href="#"
-                      >
-                        {idx + 1}
-                      </PaginationLink>
-                    </PaginationItem>
-                  ))}
-                  <PaginationItem>
-                    <PaginationNext
-                      onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                      aria-disabled={currentPage === totalPages}
-                      tabIndex={currentPage === totalPages ? -1 : 0}
-                    />
-                  </PaginationItem>
-                </PaginationContent>
-              </Pagination>
+              <Pagination
+                currentPage={currentPage}
+                totalPages={totalPages}
+                onPageChange={(page) => {
+                  const params = new URLSearchParams(Array.from(searchParams.entries()));
+                  params.set("page", String(page));
+                  router.push(`?${params.toString()}`);
+                }}
+              />
             </div>
           )}
         </div>
 
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="border-t border-border p-4 flex justify-center">
-            <Pagination
-              currentPage={currentPage}
-              totalPages={totalPages}
-              onPageChange={handlePageChange}
-              disabled={isLoading}
-            />
-          </div>
-        )}
-
         {/* Show total results count */}
         <div className="p-2 text-center text-sm text-muted-foreground">
-          {totalItems > 0 ? (
+          {pagination?.totalItems > 0 ? (
             <span>
-              Showing {adsData.length} of {totalItems} total ads
+              Showing {paginatedAds.length} of {pagination.totalItems} total ads
             </span>
           ) : adsData.length === 0 && !isLoading ? (
             <span>No ads found for this account</span>
@@ -523,11 +422,19 @@ export function AccountPageClient({
         </div>
 
         <AIPanel
-          isOpen={isAIPanelOpen}
-          onOpenChange={setIsAIPanelOpen}
-          selectedRange={selectedRange}
-          adsData={adsData}
-        />
+           isOpen={isAIPanelOpen}
+           onOpenChange={(open) => {
+             console.log('[PROP] AIPanel onOpenChange called', { open, prev: isAIPanelOpen });
+             setIsAIPanelOpen(open);
+             if (!open) {
+               setShowAnalyzeButton(false);
+               // setSelectedRange(null);
+               console.log('[PROP] AIPanel closed, setShowAnalyzeButton(false)');
+             }
+           }}
+           selectedRange={selectedRange}
+           adsData={adsData}
+         />
       </div>
     </div>
   );

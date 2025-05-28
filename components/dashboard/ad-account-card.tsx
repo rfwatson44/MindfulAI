@@ -15,7 +15,7 @@ export function AdAccountCard({ account }: AdAccountCardProps) {
         <div className="flex items-center justify-between">
           <div className="font-semibold">{account.name}</div>
           <div className="rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
-            {account.status}
+            {account.status || '-'}
           </div>
         </div>
       </CardHeader>
@@ -23,19 +23,19 @@ export function AdAccountCard({ account }: AdAccountCardProps) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <div className="text-xs text-muted-foreground">Spend</div>
-            <div className="font-semibold">${account.metrics.spend.toLocaleString()}</div>
+            <div className="font-semibold">{account.metrics.spend != null ? `$${account.metrics.spend.toLocaleString()}` : '-'}</div>
           </div>
           <div>
             <div className="text-xs text-muted-foreground">Conversions</div>
-            <div className="font-semibold">{account.metrics.conversions.toLocaleString()}</div>
+            <div className="font-semibold">{account.metrics.conversions != null ? account.metrics.conversions.toLocaleString() : '-'}</div>
           </div>
           <div>
             <div className="text-xs text-muted-foreground">Ads</div>
-            <div className="font-semibold">{account.metrics.adCount}</div>
+            <div className="font-semibold">{account.metrics.adCount != null ? account.metrics.adCount : '-'}</div>
           </div>
           <div>
             <div className="text-xs text-muted-foreground">CPA</div>
-            <div className="font-semibold">${account.metrics.cpa.toFixed(2)}</div>
+            <div className="font-semibold">{account.metrics.cpa != null ? `$${account.metrics.cpa.toFixed(2)}` : '-'}</div>
           </div>
         </div>
       </CardContent>

@@ -48,9 +48,8 @@ export default async function AccountPage({
   let query = supabase
     .from("meta_ads")
     .select("*", { count: "exact" })
-    .eq("account_id", formattedAccountId);
+    .eq("account_id", formattedAccountId); // Filter by account_id
 
-  // Add type filter if needed
   if (adType === "static" || adType === "video") {
     query = query.eq("creative_type", adType === "static" ? "IMAGE" : "VIDEO");
   }
@@ -65,9 +64,11 @@ export default async function AccountPage({
 
   // Apply pagination
   query = query.range(start, end);
-
+  console.log("[SERVER] formattedAccountId:", formattedAccountId);
+  console.log("[SERVER] Query range:", { start, end });
   // Execute query with pagination
   const { data: adsData, error: adsError, count } = await query;
+  console.log("[SERVER] Raw Supabase result:", { adsData, adsError, count });
 
   // Debug raw data structure
   console.log("First ad sample:", adsData?.[0] || "No ads found");

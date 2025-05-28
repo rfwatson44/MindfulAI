@@ -69,63 +69,76 @@ export function AdImageCell({
 }
 
 interface AdTablePropsWithAnalyze extends AdTableProps {
-  showAnalyzeButton?: boolean;
   setShowAnalyzeButton?: (show: boolean) => void;
   aiPanelOpen?: boolean;
   setAIPanelOpen?: (open: boolean) => void;
+  showDebug?: boolean;
 }
 
 export function AdTable({
   data,
   onSelectionChange,
+  showAnalyzeButton,
+  setShowAnalyzeButton,
+  aiPanelOpen,
+  setAIPanelOpen,
+  onAnalyzeSelected,
   showDebug = false,
-  showAnalyzeButton: showAnalyzeButtonProp,
-  setShowAnalyzeButton: setShowAnalyzeButtonProp,
-  aiPanelOpen: aiPanelOpenProp,
-  setAIPanelOpen: setAIPanelOpenProp,
-}: AdTablePropsWithAnalyze & { showDebug?: boolean }) {
-  // Comment out debug logs that may cause performance issues
-  // console.log("[AdTable] Rendered. data.length:", data.length);
+}: AdTablePropsWithAnalyze) {
+  // Local state fallback
+  const [showAnalyzeButtonLocal, setShowAnalyzeButtonLocal] = useState(false);
+  const [aiPanelOpenLocal, setAIPanelOpenLocal] = useState(false);
+  // Effective values: prefer prop, fallback to local
+  const showAnalyzeButtonEffective = typeof showAnalyzeButton === 'boolean' ? showAnalyzeButton : showAnalyzeButtonLocal;
+  const aiPanelOpenEffective = typeof aiPanelOpen === 'boolean' ? aiPanelOpen : aiPanelOpenLocal;
+  const setAIPanelOpenEffective = setAIPanelOpen || setAIPanelOpenLocal;
+  // Helper for setting showAnalyzeButton
+  const setShowAnalyzeButtonEffective = (show: boolean) => {
+    if (typeof setShowAnalyzeButton === 'function') {
+      setShowAnalyzeButton(show);
+    } else {
+      setShowAnalyzeButtonLocal(show);
+    }
+  };
+  // ...existing AdTable logic...
 
-  // Use memoized refs to prevent recreation on every render
-  const safeData = useMemo(() => data || [], [data]);
-
-  // DEBUG: Component mount/unmount - leave one log to debug mount cycle
-  React.useEffect(() => {
-    // console.log('[AdTable] MOUNT');
-    return () => {
-      // console.log('[AdTable] UNMOUNT');
-    };
-  }, []);
-
-  // Comment out debug logs
-  // console.log('[AdTable] PROPS', { data, onSelectionChange, showDebug });
+  // Render Analyze Selected button above filter bar if showAnalyzeButton is true and aiPanelOpen is false
+  const handleAnalyzeClick = () => {
+    if (onAnalyzeSelected) {
+      console.log('[DEBUG] [AdTable] Analyze Selected button clicked, calling parent handler');
+      onAnalyzeSelected();
+    } else if (typeof setAIPanelOpenEffective === 'function') {
+      console.log('[DEBUG] [AdTable] Analyze Selected button clicked, opening local AI panel');
+      setAIPanelOpenEffective(true);
+    } else {
+      console.log('[DEBUG] [AdTable] Analyze Selected button clicked, but no handler found');
+    }
+  };
 
   const [selectedAd, setSelectedAd] = useState<Ad | null>(null);
   const [activeMetrics, setActiveMetrics] = useState<Metric[]>(DEFAULT_METRICS);
 
-  // Use memo to prevent recreation of filteredData
+  // Safe data: always an array
+  const safeData = useMemo(() => data || [], [data]);
   const [filteredDataState, setFilteredDataState] = useState<Ad[]>(safeData);
   const filteredData = useMemo(() => filteredDataState, [filteredDataState]);
 
-  React.useEffect(() => {
-    setFilteredDataState(safeData);
-  }, [safeData]);
+  useEffect(() => {
+    // Only update filteredDataState if safeData is different
+    const isSame =
+      filteredDataState.length === safeData.length &&
+      filteredDataState.every((ad, i) => ad === safeData[i]);
+    if (!isSame) {
+      setFilteredDataState(safeData);
+      console.log('[AdTable] useEffect: data changed, resetting filteredDataState. data.length:', safeData.length);
+    } else {
+      console.log('[AdTable] useEffect: data unchanged, skipping setFilteredDataState.');
+    }
+  }, [safeData, filteredDataState]);
 
   const [selectedCells, setSelectedCells] = useState<
     Array<{ row: number; col: number }>
   >([]);
-  const [showAnalyzeButtonLocal, setShowAnalyzeButtonLocal] = useState(false);
-  const [aiPanelOpenLocal, setAIPanelOpenLocal] = useState(false);
-  const showAnalyzeButton =
-    typeof showAnalyzeButtonProp === "boolean"
-      ? showAnalyzeButtonProp
-      : showAnalyzeButtonLocal;
-  const setShowAnalyzeButton =
-    setShowAnalyzeButtonProp || setShowAnalyzeButtonLocal;
-  const aiPanelOpen =
-    typeof aiPanelOpenProp === "boolean" ? aiPanelOpenProp : aiPanelOpenLocal;
-  const setAIPanelOpen = setAIPanelOpenProp || setAIPanelOpenLocal;
   const [selectionMode, setSelectionMode] = useState<
     "none" | "cells" | "rows" | "columns"
   >("none");
@@ -134,17 +147,6 @@ export function AdTable({
   const [isDragging, setIsDragging] = useState(false);
   const [startX, setStartX] = useState(0);
   const [scrollStartLeft, setScrollStartLeft] = useState(0);
-
-  const handleOpenAdModal = (ad: Ad) => setSelectedAd(ad);
-  const handleCloseAdModal = () => setSelectedAd(null);
-
-  // DEBUG: Log incoming data
-  useEffect(() => {
-    // console.log('[AdTable] MOUNT data prop:', data);
-    if (!data || data.length === 0) {
-      // console.warn('[AdTable] WARNING: data prop is empty or undefined!');
-    }
-  }, [data]);
 
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const scrollbarRef = useRef<HTMLDivElement>(null);
@@ -260,9 +262,7 @@ export function AdTable({
   const handleFiltersChange = (filtered: Ad[]) => {
     setSelectedCells([]);
     setSelectionMode("none");
-    if (setShowAnalyzeButton) {
-      setShowAnalyzeButton(false);
-    }
+    setShowAnalyzeButtonEffective(false);
     if (onSelectionChange) {
       onSelectionChange(null);
     }
@@ -354,9 +354,9 @@ export function AdTable({
     // No-op
   }, [
     selectedCells.length,
-    showAnalyzeButtonProp,
+    showAnalyzeButton,
     showAnalyzeButtonLocal,
-    aiPanelOpenProp,
+    aiPanelOpen,
     aiPanelOpenLocal,
   ]);
 
@@ -383,15 +383,13 @@ export function AdTable({
     // Skip if no selection or no onSelectionChange handler
     if (selectedCells.length === 0 || !onSelectionChange) {
       if (typeof setShowAnalyzeButton === "function") {
-        setShowAnalyzeButton(false);
+        setShowAnalyzeButtonEffective(false);
       }
       return;
     }
 
     // Show the analyze button if there are selections
-    if (typeof setShowAnalyzeButton === "function") {
-      setShowAnalyzeButton(selectedCells.length > 0);
-    }
+    setShowAnalyzeButtonEffective(selectedCells.length > 0);
 
     // This will be our selection result
     let selection: SelectedRange | null = null;
@@ -494,7 +492,7 @@ export function AdTable({
       setSelectedCells([]);
       setSelectionMode("none");
       if (typeof setShowAnalyzeButton === "function") {
-        setShowAnalyzeButton(false);
+        setShowAnalyzeButtonEffective(false);
       }
       onSelectionChange(null);
     }
@@ -543,21 +541,8 @@ export function AdTable({
 
   return (
     <div className="flex flex-col h-full min-h-0 flex-1">
-      {/* Analyze Selected button above metrics/filter bar, aligned right */}
 
-      {filteredData.length > 0 && aiPanelOpen && (
-        <AIPanel
-          isOpen={aiPanelOpen}
-          onOpenChange={setAIPanelOpen}
-          selectedRange={getSelectionSummary(
-            selectionMode as SelectionMode,
-            selectedCells,
-            activeMetrics,
-            filteredData
-          )}
-          adsData={filteredData}
-        />
-      )}
+      {/* AI Panel is now only rendered at the page level. Removed from AdTable for single source of truth. */}
       <div className="border-b p-4 sticky top-0 z-30 bg-white">
         <AdTableFilters
           data={data}
@@ -566,7 +551,7 @@ export function AdTable({
           onMetricToggle={handleMetricToggle}
         />
       </div>
-      <div className="flex-1 min-h-0 overflow-auto w-full">
+      <div className="flex-1 min-h-0 overflow-auto w-full" ref={tableContainerRef} onScroll={handleScroll}>
         <Table>
           <AdTableHeader
             activeMetrics={activeMetrics}
@@ -585,36 +570,32 @@ export function AdTable({
                 </TableCell>
               </TableRow>
             )}
-            {filteredData.map((ad, rowIndex) => {
-              // // console.log('[AdTable] Rendering ad row:', ad, rowIndex);
-              return (
-                <React.Fragment key={ad.id || rowIndex}>
-                  <AdTableRow
-                    ad={ad}
-                    rowIndex={rowIndex}
-                    activeMetrics={activeMetrics}
-                    isCellSelected={isCellSelected}
-                    handleRowHeaderClick={handleRowHeaderClick}
-                    handleCellClick={handleCellClick}
-                    formatValue={formatValue}
-                  />
-                  {showDebug && (
-                    <TableRow className="bg-yellow-50">
-                      <TableCell
-                        colSpan={activeMetrics.length + 2}
-                        className="p-0"
-                      >
-                        <AdTableDebugCell ad={ad} />
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </React.Fragment>
-              );
-            })}
+            {filteredData.map((ad, rowIndex) => (
+              <React.Fragment key={ad.id || rowIndex}>
+                <AdTableRow
+                  ad={ad}
+                  rowIndex={rowIndex}
+                  activeMetrics={activeMetrics}
+                  isCellSelected={isCellSelected}
+                  handleRowHeaderClick={handleRowHeaderClick}
+                  handleCellClick={handleCellClick}
+                  formatValue={formatValue}
+                />
+                {showDebug && (
+                  <TableRow className="bg-yellow-50">
+                    <TableCell
+                      colSpan={activeMetrics.length + 2}
+                      className="p-0"
+                    >
+                      <AdTableDebugCell ad={ad} />
+                    </TableCell>
+                  </TableRow>
+                )}
+              </React.Fragment>
+            ))}
           </TableBody>
         </Table>
       </div>
     </div>
   );
 }
-export default AdTable;

@@ -31,11 +31,19 @@ export function AIPanel({
   selectedRange,
   adsData,
 }: AIPanelProps & { onOpenChange: (open: boolean) => void }) {
+  console.log('[RENDER] AIPanel', { isOpen, selectedRange, adsData, onOpenChange });
   const [activeAction, setActiveAction] = useState("summarize");
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
+  // Debug logs for props passed to children
+  console.log('[RENDER] SelectionSummary props', { selectedRange, isDetailsOpen });
+  console.log('[RENDER] SummarizeTab props', { selectedRange, adsData });
+
   return (
-    <Sheet open={isOpen} onOpenChange={onOpenChange}>
+    <Sheet open={isOpen} onOpenChange={(open) => {
+      console.log('[SHEET] onOpenChange called', { open, prev: isOpen });
+      onOpenChange(open);
+    }}>
       <SheetContent
         className="fixed top-0 right-0 h-screen max-h-screen w-full max-w-2xl border-l p-0 sm:max-w-4xl bg-background z-50"
         side="right"
@@ -50,6 +58,7 @@ export function AIPanel({
           </div>
 
           <div className="p-4">
+            {console.log('[RENDER] SelectionSummary props', { selectedRange, isDetailsOpen })}
             <SelectionSummary
               selectedRange={selectedRange}
               isDetailsOpen={isDetailsOpen}
@@ -94,6 +103,7 @@ export function AIPanel({
             <div className="flex-1 overflow-y-auto max-h-[calc(100vh-64px)]">
               <div className="p-4">
                 <TabsContent value="summarize" className="mt-0">
+                  {console.log('[RENDER] SummarizeTab props', { selectedRange, adsData })}
                   <SummarizeTab
                     selectedRange={selectedRange}
                     adsData={adsData}
