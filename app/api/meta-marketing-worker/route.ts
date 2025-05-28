@@ -610,6 +610,21 @@ async function getInsights(
 
 // Main background job handler with chunked processing
 async function handler(request: Request) {
+  // 🚨 EMERGENCY CIRCUIT BREAKER - FORCE STOP ALL PROCESSING
+  console.log(
+    "🚨 EMERGENCY CIRCUIT BREAKER ACTIVATED - FORCE STOPPING ALL PROCESSING"
+  );
+  return Response.json(
+    {
+      success: false,
+      error: "Worker force stopped for debugging infinite loop issue",
+      circuitBreaker: true,
+      forceStop: true,
+      timestamp: new Date().toISOString(),
+    },
+    { status: 503 }
+  );
+
   const supabase = await createClient();
   const startTime = Date.now();
 
@@ -1089,9 +1104,30 @@ async function processCampaignsPhase(
   try {
     const account = new AdAccount(accountId);
 
-    // Get campaigns with comprehensive fields
+    // 🔍 DEBUGGING: First, let's get a count of total campaigns
+    console.log("=== DEBUGGING CAMPAIGN FETCHING ===");
+
+    // Get campaigns with comprehensive fields and NO FILTERING
     const campaignOptions: any = {
       limit: 100, // Increased to 100 to match ads and adsets limits for better throughput
+      // 🚨 CRITICAL FIX: Include ALL campaign statuses
+      filtering: [
+        {
+          field: "delivery_info.delivery_status",
+          operator: "IN",
+          value: [
+            "active",
+            "paused",
+            "deleted",
+            "pending_review",
+            "disapproved",
+            "preapproved",
+            "pending_billing_info",
+            "campaign_paused",
+            "archived",
+          ],
+        },
+      ],
     };
 
     // Only add after parameter if it's not empty and looks like a valid cursor
@@ -1100,6 +1136,47 @@ async function processCampaignsPhase(
       campaignOptions.after = after;
     } else {
       console.log("Starting from the beginning (no cursor)");
+    }
+
+    console.log(
+      "🔍 Campaign fetch options:",
+      JSON.stringify(campaignOptions, null, 2)
+    );
+
+    // 🔍 DEBUGGING: Try to get campaign count first
+    try {
+      console.log("🔍 Attempting to get campaign summary...");
+      const campaignSummary = await withRateLimitRetry(
+        async () => {
+          return account.getCampaigns(["id", "name", "status"], {
+            limit: 1000,
+          });
+        },
+        {
+          accountId,
+          endpoint: "campaigns_summary",
+          callType: "READ",
+          points: RATE_LIMIT_CONFIG.POINTS.READ,
+          supabase,
+        }
+      );
+      console.log(
+        `🔍 Campaign summary: Found ${campaignSummary.length} campaigns total`
+      );
+
+      // Log first few campaign IDs and statuses for debugging
+      if (campaignSummary.length > 0) {
+        console.log(
+          "🔍 First 10 campaigns:",
+          campaignSummary.slice(0, 10).map((c: any) => ({
+            id: c.id,
+            name: c.name,
+            status: c.status,
+          }))
+        );
+      }
+    } catch (summaryError) {
+      console.warn("🔍 Could not get campaign summary:", summaryError);
     }
 
     const campaigns = await withRateLimitRetry(
@@ -1115,10 +1192,172 @@ async function processCampaignsPhase(
       }
     );
 
-    console.log(`Retrieved ${campaigns.length} campaigns`);
+    console.log(`Retrieved ${campaigns.length} campaigns with current options`);
+
+    // 🔍 DEBUGGING: Log campaign details
+    if (campaigns.length > 0) {
+      console.log("🔍 Retrieved campaigns details:");
+      campaigns.slice(0, 5).forEach((campaign: any, index: number) => {
+        console.log(
+          `  ${index + 1}. ${campaign.name} (${campaign.id}) - Status: ${
+            campaign.status
+          }`
+        );
+      });
+    }
+
+    // 🔍 DEBUGGING: Check pagination info
+    try {
+      console.log("🔍 Pagination info:");
+      console.log("  - campaigns.length:", campaigns.length);
+      console.log(
+        "  - campaigns.hasNext:",
+        campaigns.hasNext ? campaigns.hasNext() : "N/A"
+      );
+      console.log("  - campaigns.paging:", campaigns.paging || "N/A");
+
+      if (campaigns.paging) {
+        console.log("  - cursors:", campaigns.paging.cursors || "N/A");
+        console.log("  - next:", campaigns.paging.next || "N/A");
+      }
+    } catch (pagingDebugError) {
+      console.warn("🔍 Error debugging pagination:", pagingDebugError);
+    }
+
+    // 🚨 FALLBACK STRATEGY: If we got very few campaigns, try alternative approaches
+    let finalCampaigns = campaigns;
+    if (campaigns.length < 50 && !after) {
+      // Only try fallbacks on first fetch
+      console.log(
+        "🔄 FALLBACK: Got fewer than 50 campaigns, trying alternative approaches..."
+      );
+
+      // FALLBACK 1: Try without any filtering
+      try {
+        console.log("🔄 FALLBACK 1: Trying without filtering...");
+        const fallbackCampaigns1 = await withRateLimitRetry(
+          async () => {
+            return account.getCampaigns(campaignFields, {
+              limit: 500, // Increase limit significantly
+            });
+          },
+          {
+            accountId,
+            endpoint: "campaigns_fallback1",
+            callType: "READ",
+            points: RATE_LIMIT_CONFIG.POINTS.READ,
+            supabase,
+          }
+        );
+        console.log(
+          `🔄 FALLBACK 1: Retrieved ${fallbackCampaigns1.length} campaigns without filtering`
+        );
+
+        if (fallbackCampaigns1.length > campaigns.length) {
+          console.log(
+            "✅ FALLBACK 1: Using unfiltered results (more campaigns found)"
+          );
+          finalCampaigns = fallbackCampaigns1;
+        }
+      } catch (fallback1Error) {
+        console.warn("🔄 FALLBACK 1 failed:", fallback1Error);
+      }
+
+      // FALLBACK 2: Try with different status filtering
+      if (finalCampaigns.length < 100) {
+        try {
+          console.log("🔄 FALLBACK 2: Trying with broader status filtering...");
+          const fallbackCampaigns2 = await withRateLimitRetry(
+            async () => {
+              return account.getCampaigns(campaignFields, {
+                limit: 500,
+                filtering: [
+                  {
+                    field: "status",
+                    operator: "IN",
+                    value: ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"],
+                  },
+                ],
+              });
+            },
+            {
+              accountId,
+              endpoint: "campaigns_fallback2",
+              callType: "READ",
+              points: RATE_LIMIT_CONFIG.POINTS.READ,
+              supabase,
+            }
+          );
+          console.log(
+            `🔄 FALLBACK 2: Retrieved ${fallbackCampaigns2.length} campaigns with status filtering`
+          );
+
+          if (fallbackCampaigns2.length > finalCampaigns.length) {
+            console.log(
+              "✅ FALLBACK 2: Using status-filtered results (more campaigns found)"
+            );
+            finalCampaigns = fallbackCampaigns2;
+          }
+        } catch (fallback2Error) {
+          console.warn("🔄 FALLBACK 2 failed:", fallback2Error);
+        }
+      }
+
+      // FALLBACK 3: Try with time range filtering (get campaigns from last 2 years)
+      if (finalCampaigns.length < 100) {
+        try {
+          console.log("🔄 FALLBACK 3: Trying with time range filtering...");
+          const twoYearsAgo = new Date();
+          twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
+
+          const fallbackCampaigns3 = await withRateLimitRetry(
+            async () => {
+              return account.getCampaigns(campaignFields, {
+                limit: 500,
+                time_range: {
+                  since: twoYearsAgo.toISOString().split("T")[0],
+                  until: new Date().toISOString().split("T")[0],
+                },
+              });
+            },
+            {
+              accountId,
+              endpoint: "campaigns_fallback3",
+              callType: "READ",
+              points: RATE_LIMIT_CONFIG.POINTS.READ,
+              supabase,
+            }
+          );
+          console.log(
+            `🔄 FALLBACK 3: Retrieved ${fallbackCampaigns3.length} campaigns with time range`
+          );
+
+          if (fallbackCampaigns3.length > finalCampaigns.length) {
+            console.log(
+              "✅ FALLBACK 3: Using time-range filtered results (more campaigns found)"
+            );
+            finalCampaigns = fallbackCampaigns3;
+          }
+        } catch (fallback3Error) {
+          console.warn("🔄 FALLBACK 3 failed:", fallback3Error);
+        }
+      }
+    }
+
+    // Update campaigns reference to use the best result
+    const campaignsToProcess = finalCampaigns;
+    console.log(`📊 FINAL: Processing ${campaignsToProcess.length} campaigns`);
+
+    if (campaignsToProcess.length !== campaigns.length) {
+      console.log(
+        `📊 IMPROVEMENT: Fallback strategy found ${
+          campaignsToProcess.length - campaigns.length
+        } additional campaigns`
+      );
+    }
 
     // Process each campaign
-    for (let i = 0; i < campaigns.length; i++) {
+    for (let i = 0; i < campaignsToProcess.length; i++) {
       // Check time limit frequently
       if (shouldCreateFollowUpJob(startTime)) {
         console.log(`Time limit reached after processing ${i} campaigns`);
@@ -1126,9 +1365,9 @@ async function processCampaignsPhase(
         // Get the proper next cursor from the campaigns object
         let nextCursor = "";
         try {
-          if (campaigns.hasNext && campaigns.hasNext()) {
+          if (campaignsToProcess.hasNext && campaignsToProcess.hasNext()) {
             // Try to get the next cursor from the campaigns object
-            const paging = campaigns.paging;
+            const paging = campaignsToProcess.paging;
             nextCursor = paging?.cursors?.after || "";
             console.log(`Got next cursor from paging: ${nextCursor}`);
           }
@@ -1152,13 +1391,14 @@ async function processCampaignsPhase(
         break;
       }
 
-      const campaign = campaigns[i];
-      const progress = 40 + Math.floor(((i + 1) / campaigns.length) * 20); // 40% to 60%
+      const campaign = campaignsToProcess[i];
+      const progress =
+        40 + Math.floor(((i + 1) / campaignsToProcess.length) * 20); // 40% to 60%
 
       console.log(
-        `Processing campaign ${i + 1}/${campaigns.length}: ${campaign.name} (${
-          campaign.id
-        })`
+        `Processing campaign ${i + 1}/${campaignsToProcess.length}: ${
+          campaign.name
+        } (${campaign.id})`
       );
       console.log(`Progress: ${progress}%`);
       console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
@@ -1309,6 +1549,33 @@ async function processCampaignsPhase(
     console.log(`Total errors: ${totalErrors}`);
     console.log(`Campaign IDs collected: ${campaignIds.length}`);
     console.log(`Campaign IDs: ${campaignIds.join(", ")}`);
+    console.log(`Original fetch returned: ${campaigns.length} campaigns`);
+    console.log(
+      `Final processing used: ${campaignsToProcess.length} campaigns`
+    );
+    console.log(
+      `Fallback strategy improvement: ${
+        campaignsToProcess.length - campaigns.length
+      } additional campaigns`
+    );
+    console.log(
+      `Success rate: ${(
+        (processedCampaigns.length / campaignsToProcess.length) *
+        100
+      ).toFixed(1)}%`
+    );
+
+    // 🔍 DEBUGGING: Log campaign statuses
+    if (processedCampaigns.length > 0) {
+      const statusCounts = processedCampaigns.reduce(
+        (acc: any, campaign: any) => {
+          acc[campaign.status] = (acc[campaign.status] || 0) + 1;
+          return acc;
+        },
+        {}
+      );
+      console.log(`Campaign status distribution:`, statusCounts);
+    }
 
     // Determine next action using proper pagination
     let hasMore = false;
@@ -1316,9 +1583,9 @@ async function processCampaignsPhase(
 
     try {
       // Check if there are more campaigns using the Facebook SDK pagination
-      if (campaigns.hasNext && campaigns.hasNext()) {
+      if (campaignsToProcess.hasNext && campaignsToProcess.hasNext()) {
         hasMore = true;
-        const paging = campaigns.paging;
+        const paging = campaignsToProcess.paging;
         nextCursor = paging?.cursors?.after || "";
         console.log(`Has more campaigns. Next cursor: ${nextCursor}`);
 
@@ -1632,7 +1899,11 @@ async function processAdsetsPhase(
       const adsetsResponse = await withRateLimitRetry(
         async () => {
           const campaign = new Campaign(campaignId);
-          return campaign.getAdSets(adsetFields, { limit: 100 }); // Increased to 100 for better throughput
+          // 🚨 CRITICAL FIX: Try to get ALL adsets regardless of status
+          return campaign.getAdSets(adsetFields, {
+            limit: 500, // Significantly increased limit
+            // Try without filtering first to get all adsets
+          });
         },
         {
           accountId,
@@ -1678,6 +1949,68 @@ async function processAdsetsPhase(
         `✅ Found ${adsets.length} adsets for campaign ${campaignId}`
       );
       totalAdsetsFound += adsets.length;
+
+      // 🚨 FALLBACK: If we got very few adsets, try alternative approaches
+      if (adsets.length < 10) {
+        console.log(
+          `🔄 ADSETS FALLBACK: Got only ${adsets.length} adsets for campaign ${campaignId}, trying alternatives...`
+        );
+
+        try {
+          console.log("🔄 ADSETS FALLBACK: Trying with status filtering...");
+          const fallbackAdsets = await withRateLimitRetry(
+            async () => {
+              const campaign = new Campaign(campaignId);
+              return campaign.getAdSets(adsetFields, {
+                limit: 500,
+                filtering: [
+                  {
+                    field: "status",
+                    operator: "IN",
+                    value: ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"],
+                  },
+                ],
+              });
+            },
+            {
+              accountId,
+              endpoint: "adsets_fallback",
+              callType: "READ",
+              points: RATE_LIMIT_CONFIG.POINTS.READ,
+              supabase,
+            }
+          );
+
+          let fallbackAdsetsArray: any[] = [];
+          if (Array.isArray(fallbackAdsets)) {
+            fallbackAdsetsArray = fallbackAdsets;
+          } else if (fallbackAdsets && typeof fallbackAdsets === "object") {
+            const responseObj = fallbackAdsets as any;
+            if (responseObj.data) {
+              fallbackAdsetsArray = responseObj.data;
+            } else if (responseObj.length !== undefined) {
+              fallbackAdsetsArray = Array.from(responseObj);
+            }
+          }
+
+          console.log(
+            `🔄 ADSETS FALLBACK: Retrieved ${fallbackAdsetsArray.length} adsets with status filtering`
+          );
+
+          if (fallbackAdsetsArray.length > adsets.length) {
+            console.log(
+              "✅ ADSETS FALLBACK: Using status-filtered results (more adsets found)"
+            );
+            adsets = fallbackAdsetsArray;
+            totalAdsetsFound =
+              totalAdsetsFound -
+              (adsets.length - fallbackAdsetsArray.length) +
+              fallbackAdsetsArray.length;
+          }
+        } catch (adsetsFallbackError) {
+          console.warn("🔄 ADSETS FALLBACK failed:", adsetsFallbackError);
+        }
+      }
 
       if (adsets.length === 0) {
         console.log(`⚠️ No adsets found for campaign ${campaignId}`);
@@ -1863,11 +2196,26 @@ async function processAdsetsPhase(
 
   console.log(`\n=== ADSETS PHASE SUMMARY ===`);
   console.log(`Total adsets found: ${totalAdsetsFound}`);
-  console.log(`Total adsets stored: ${totalAdsetsStored}`);
+  console.log(`Total adsets processed: ${processedAdsets.length}`);
   console.log(`Total errors: ${totalErrors}`);
-  console.log(`Processed adsets: ${processedAdsets.length}`);
   console.log(`Adset IDs collected: ${adsetIds.length}`);
   console.log(`Adset IDs: ${adsetIds.join(", ")}`);
+  console.log(
+    `Success rate: ${
+      totalAdsetsFound > 0
+        ? ((processedAdsets.length / totalAdsetsFound) * 100).toFixed(1)
+        : 0
+    }%`
+  );
+
+  // 🔍 DEBUGGING: Log adset statuses
+  if (processedAdsets.length > 0) {
+    const statusCounts = processedAdsets.reduce((acc: any, adset: any) => {
+      acc[adset.status] = (acc[adset.status] || 0) + 1;
+      return acc;
+    }, {});
+    console.log(`Adset status distribution:`, statusCounts);
+  }
 
   // Determine next action
   if (remainingCampaigns.length > 0) {
@@ -2456,7 +2804,11 @@ async function processAdsPhase(
       const ads = await withRateLimitRetry(
         async () => {
           const adset = new AdSet(adsetId);
-          return adset.getAds(adFields, { limit: 100 }); // Increased limit for more ads
+          // 🚨 CRITICAL FIX: Try to get ALL ads regardless of status
+          return adset.getAds(adFields, {
+            limit: 500, // Significantly increased limit from 100 to 500
+            // Try without filtering first to get all ads
+          });
         },
         {
           accountId,
@@ -2469,8 +2821,55 @@ async function processAdsPhase(
 
       console.log(`Retrieved ${ads.length} ads for adset ${adsetId}`);
 
+      // 🚨 FALLBACK: If we got very few ads, try alternative approaches
+      let finalAds = ads;
+      if (ads.length < 5) {
+        console.log(
+          `🔄 ADS FALLBACK: Got only ${ads.length} ads for adset ${adsetId}, trying alternatives...`
+        );
+
+        try {
+          console.log("🔄 ADS FALLBACK: Trying with status filtering...");
+          const fallbackAds = await withRateLimitRetry(
+            async () => {
+              const adset = new AdSet(adsetId);
+              return adset.getAds(adFields, {
+                limit: 500,
+                filtering: [
+                  {
+                    field: "status",
+                    operator: "IN",
+                    value: ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"],
+                  },
+                ],
+              });
+            },
+            {
+              accountId,
+              endpoint: "ads_fallback",
+              callType: "READ",
+              points: RATE_LIMIT_CONFIG.POINTS.READ,
+              supabase,
+            }
+          );
+
+          console.log(
+            `🔄 ADS FALLBACK: Retrieved ${fallbackAds.length} ads with status filtering`
+          );
+
+          if (fallbackAds.length > ads.length) {
+            console.log(
+              "✅ ADS FALLBACK: Using status-filtered results (more ads found)"
+            );
+            finalAds = fallbackAds;
+          }
+        } catch (adsFallbackError) {
+          console.warn("🔄 ADS FALLBACK failed:", adsFallbackError);
+        }
+      }
+
       // Process each ad
-      for (const ad of ads) {
+      for (const ad of finalAds) {
         // Check time for each ad
         if (shouldCreateFollowUpJob(startTime)) {
           console.log("Time limit reached during ad processing");
@@ -2724,8 +3123,20 @@ async function processAdsPhase(
   }
 
   console.log(`\n=== ADS PHASE SUMMARY ===`);
-  console.log(`Processed ${processedAds.length} ads`);
+  console.log(`Total ads processed: ${processedAds.length}`);
   console.log(`Total errors: ${totalErrors}`);
+  console.log(
+    `Adsets processed: ${adsetsToProcess.length} of ${adsetIds.length}`
+  );
+
+  // 🔍 DEBUGGING: Log ad statuses
+  if (processedAds.length > 0) {
+    const statusCounts = processedAds.reduce((acc: any, ad: any) => {
+      acc[ad.status] = (acc[ad.status] || 0) + 1;
+      return acc;
+    }, {});
+    console.log(`Ad status distribution:`, statusCounts);
+  }
 
   // Determine next action
   const totalProcessed = adsetsToProcess.length;
