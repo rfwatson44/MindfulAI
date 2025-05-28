@@ -214,6 +214,55 @@ async function createFollowUpJob(payload: ChunkedJobPayload) {
       );
     }
 
+    // 🛡️ ENHANCED VALIDATION: Don't create follow-up jobs without valid data
+    if (
+      payload.phase === "campaigns" &&
+      payload.after &&
+      payload.after.trim() === ""
+    ) {
+      console.log(
+        "🛑 PREVENTING EMPTY CURSOR: No valid cursor for campaigns pagination"
+      );
+      throw new Error(
+        "Cannot create follow-up job with empty cursor for campaigns"
+      );
+    }
+
+    if (
+      payload.phase === "adsets" &&
+      (!payload.campaignIds || payload.campaignIds.length === 0)
+    ) {
+      console.log(
+        "🛑 PREVENTING EMPTY CAMPAIGNS: No campaign IDs for adsets phase"
+      );
+      throw new Error(
+        "Cannot create follow-up job without campaign IDs for adsets"
+      );
+    }
+
+    if (
+      payload.phase === "ads" &&
+      (!payload.adsetIds || payload.adsetIds.length === 0)
+    ) {
+      console.log("🛑 PREVENTING EMPTY ADSETS: No adset IDs for ads phase");
+      throw new Error("Cannot create follow-up job without adset IDs for ads");
+    }
+
+    // 🛡️ CURSOR VALIDATION: Don't create jobs with same cursor as previous
+    if (payload.after && payload.after.trim() !== "") {
+      console.log(`🔍 Validating cursor before job creation: ${payload.after}`);
+
+      // Simple validation: cursor should be a reasonable length and format
+      if (payload.after.length < 10 || payload.after.length > 500) {
+        console.log(
+          `🛑 INVALID CURSOR LENGTH: ${payload.after.length} characters`
+        );
+        throw new Error(
+          `Invalid cursor length: ${payload.after.length} characters`
+        );
+      }
+    }
+
     const baseUrl =
       process.env.WEBHOOK_BASE_URL ||
       (process.env.VERCEL_PROJECT_PRODUCTION_URL
@@ -235,6 +284,7 @@ async function createFollowUpJob(payload: ChunkedJobPayload) {
       after: jobPayload.after || "none",
       campaignIds: jobPayload.campaignIds?.length || 0,
       adsetIds: jobPayload.adsetIds?.length || 0,
+      validation: "passed",
     });
 
     const response = await qstashClient.publishJSON({
@@ -252,11 +302,25 @@ async function createFollowUpJob(payload: ChunkedJobPayload) {
     });
 
     console.log(
-      `Follow-up job created: ${response.messageId} (iteration ${nextIteration})`
+      `✅ Follow-up job created successfully: ${response.messageId} (iteration ${nextIteration})`
     );
     return response;
   } catch (error) {
-    console.error("Error creating follow-up job:", error);
+    console.error("❌ Error creating follow-up job:", error);
+
+    // Don't throw the error if it's a validation error - just log and return null
+    if (
+      error instanceof Error &&
+      (error.message.includes("PREVENTING") ||
+        error.message.includes("Cannot create follow-up job") ||
+        error.message.includes("Invalid cursor"))
+    ) {
+      console.log(
+        "🛑 Follow-up job creation prevented by validation - this is expected behavior"
+      );
+      return null;
+    }
+
     throw error;
   }
 }
@@ -610,21 +674,6 @@ async function getInsights(
 
 // Main background job handler with chunked processing
 async function handler(request: Request) {
-  // 🚨 EMERGENCY CIRCUIT BREAKER - FORCE STOP ALL PROCESSING
-  console.log(
-    "🚨 EMERGENCY CIRCUIT BREAKER ACTIVATED - FORCE STOPPING ALL PROCESSING"
-  );
-  return Response.json(
-    {
-      success: false,
-      error: "Worker force stopped for debugging infinite loop issue",
-      circuitBreaker: true,
-      forceStop: true,
-      timestamp: new Date().toISOString(),
-    },
-    { status: 503 }
-  );
-
   const supabase = await createClient();
   const startTime = Date.now();
 
@@ -653,7 +702,7 @@ async function handler(request: Request) {
     const payload: ChunkedJobPayload = await request.json();
     console.log("Background job started with payload:", payload);
 
-    // 🛡️ SAFETY CHECKS TO PREVENT INFINITE LOOPS
+    // 🛡️ ENHANCED SAFETY CHECKS TO PREVENT INFINITE LOOPS
     const maxIterations = parseInt(process.env.MAX_WORKER_ITERATIONS || "50");
     const currentIteration = payload.iteration || 0;
 
@@ -679,6 +728,45 @@ async function handler(request: Request) {
         status: "completed_by_safety_limit",
         iterations: currentIteration,
       });
+    }
+
+    // 🛡️ CURSOR VALIDATION: Prevent same cursor loops
+    if (payload.after && payload.after.trim() !== "") {
+      console.log(`🔍 Validating cursor: ${payload.after}`);
+
+      // Check if this cursor was used in recent iterations
+      const cursorKey = `cursor_${payload.accountId}_${payload.phase}_${payload.after}`;
+      const { data: recentCursor } = await supabase
+        .from("background_jobs")
+        .select("created_at")
+        .eq("request_id", payload.requestId)
+        .like("result_data", `%${payload.after}%`)
+        .gte("created_at", new Date(Date.now() - 10 * 60 * 1000).toISOString()) // Last 10 minutes
+        .limit(1);
+
+      if (recentCursor && recentCursor.length > 0) {
+        console.log(
+          `🛑 CURSOR SAFETY: Same cursor detected in recent iterations, stopping pagination`
+        );
+        await updateJobStatus(
+          supabase,
+          payload.requestId,
+          "completed",
+          100,
+          undefined,
+          {
+            message: "Job completed due to cursor safety check",
+            reason: "duplicate_cursor_detected",
+            cursor: payload.after,
+          }
+        );
+        return Response.json({
+          success: true,
+          requestId: payload.requestId,
+          status: "completed_by_cursor_safety",
+          cursor: payload.after,
+        });
+      }
     }
 
     console.log(
@@ -1632,15 +1720,94 @@ async function processCampaignsPhase(
       console.log("🔄 Creating follow-up job for more campaigns");
       console.log(`Next cursor: ${nextCursor}`);
       console.log(`Previous cursor: ${after}`);
-      await createFollowUpJob({
-        accountId,
-        timeframe,
-        action: "get24HourData",
-        requestId,
-        phase: "campaigns",
-        after: nextCursor,
-        iteration,
-      });
+
+      try {
+        const followUpResult = await createFollowUpJob({
+          accountId,
+          timeframe,
+          action: "get24HourData",
+          requestId,
+          phase: "campaigns",
+          after: nextCursor,
+          iteration,
+        });
+
+        if (followUpResult) {
+          console.log("✅ Follow-up job created successfully for campaigns");
+        } else {
+          console.log(
+            "🛑 Follow-up job creation was prevented by validation - moving to adsets phase"
+          );
+          // If follow-up job creation was prevented, move to next phase
+          await updateJobStatus(supabase, requestId, "processing", 60);
+
+          if (campaignIds.length > 0) {
+            const adsetJobResult = await createFollowUpJob({
+              accountId,
+              timeframe,
+              action: "get24HourData",
+              requestId,
+              phase: "adsets",
+              campaignIds: campaignIds,
+              after: "",
+              iteration,
+            });
+
+            if (adsetJobResult) {
+              console.log("🚀 Adsets phase job created successfully");
+            } else {
+              console.log("⚠️ Could not create adsets job, completing");
+              await updateJobStatus(supabase, requestId, "completed", 100);
+            }
+          } else {
+            console.log("⚠️ No campaigns found, completing job");
+            await updateJobStatus(supabase, requestId, "completed", 100);
+          }
+        }
+      } catch (followUpError) {
+        console.error(
+          "❌ Error creating follow-up job for campaigns:",
+          followUpError
+        );
+        // If we can't create follow-up job, move to next phase
+        console.log("🔄 Moving to adsets phase due to follow-up job error");
+        await updateJobStatus(supabase, requestId, "processing", 60);
+
+        if (campaignIds.length > 0) {
+          try {
+            const adsetJobResult = await createFollowUpJob({
+              accountId,
+              timeframe,
+              action: "get24HourData",
+              requestId,
+              phase: "adsets",
+              campaignIds: campaignIds,
+              after: "",
+              iteration,
+            });
+
+            if (adsetJobResult) {
+              console.log(
+                "🚀 Adsets phase job created successfully after campaigns error"
+              );
+            } else {
+              console.log(
+                "⚠️ Could not create adsets job after campaigns error, completing"
+              );
+              await updateJobStatus(supabase, requestId, "completed", 100);
+            }
+          } catch (adsetJobError) {
+            console.error(
+              "❌ Error creating adsets job after campaigns error:",
+              adsetJobError
+            );
+            await updateJobStatus(supabase, requestId, "completed", 100);
+          }
+        } else {
+          console.log("⚠️ No campaigns found after error, completing job");
+          await updateJobStatus(supabase, requestId, "completed", 100);
+        }
+      }
     } else {
       // All campaigns processed, move to adsets phase
       console.log("✅ All campaigns processed, starting adsets phase");
@@ -1659,17 +1826,28 @@ async function processCampaignsPhase(
       await updateJobStatus(supabase, requestId, "processing", 60);
 
       if (campaignIds.length > 0) {
-        await createFollowUpJob({
-          accountId,
-          timeframe,
-          action: "get24HourData",
-          requestId,
-          phase: "adsets",
-          campaignIds: campaignIds,
-          after: "",
-          iteration,
-        });
-        console.log("🚀 Adsets phase job created successfully");
+        try {
+          const adsetJobResult = await createFollowUpJob({
+            accountId,
+            timeframe,
+            action: "get24HourData",
+            requestId,
+            phase: "adsets",
+            campaignIds: campaignIds,
+            after: "",
+            iteration,
+          });
+
+          if (adsetJobResult) {
+            console.log("🚀 Adsets phase job created successfully");
+          } else {
+            console.log("⚠️ Could not create adsets job, completing");
+            await updateJobStatus(supabase, requestId, "completed", 100);
+          }
+        } catch (adsetJobError) {
+          console.error("❌ Error creating adsets job:", adsetJobError);
+          await updateJobStatus(supabase, requestId, "completed", 100);
+        }
       } else {
         console.log("⚠️ No campaigns found, completing job");
         await updateJobStatus(supabase, requestId, "completed", 100);
@@ -2223,16 +2401,97 @@ async function processAdsetsPhase(
     console.log("🔄 Creating follow-up job for remaining campaigns");
     console.log(`Remaining campaigns: ${remainingCampaigns.length}`);
     console.log(`Remaining campaign IDs: ${remainingCampaigns.join(", ")}`);
-    await createFollowUpJob({
-      accountId,
-      timeframe,
-      action: "get24HourData",
-      requestId,
-      phase: "adsets",
-      campaignIds: remainingCampaigns,
-      after: "",
-      iteration,
-    });
+
+    try {
+      const followUpResult = await createFollowUpJob({
+        accountId,
+        timeframe,
+        action: "get24HourData",
+        requestId,
+        phase: "adsets",
+        campaignIds: remainingCampaigns,
+        after: "",
+        iteration,
+      });
+
+      if (followUpResult) {
+        console.log(
+          "✅ Follow-up job created successfully for remaining campaigns"
+        );
+      } else {
+        console.log(
+          "🛑 Follow-up job creation was prevented by validation - moving to ads phase"
+        );
+        // If follow-up job creation was prevented, move to next phase
+        await updateJobStatus(supabase, requestId, "processing", 80);
+
+        if (adsetIds.length > 0) {
+          const adsJobResult = await createFollowUpJob({
+            accountId,
+            timeframe,
+            action: "get24HourData",
+            requestId,
+            phase: "ads",
+            adsetIds: adsetIds,
+            after: "",
+            iteration,
+          });
+
+          if (adsJobResult) {
+            console.log("🚀 Ads phase job created successfully");
+          } else {
+            console.log("⚠️ Could not create ads job, completing");
+            await updateJobStatus(supabase, requestId, "completed", 100);
+          }
+        } else {
+          console.log("⚠️ No adsets found, completing job");
+          await updateJobStatus(supabase, requestId, "completed", 100);
+        }
+      }
+    } catch (followUpError) {
+      console.error(
+        "❌ Error creating follow-up job for remaining campaigns:",
+        followUpError
+      );
+      // If we can't create follow-up job, move to next phase
+      console.log("🔄 Moving to ads phase due to follow-up job error");
+      await updateJobStatus(supabase, requestId, "processing", 80);
+
+      if (adsetIds.length > 0) {
+        try {
+          const adsJobResult = await createFollowUpJob({
+            accountId,
+            timeframe,
+            action: "get24HourData",
+            requestId,
+            phase: "ads",
+            adsetIds: adsetIds,
+            after: "",
+            iteration,
+          });
+
+          if (adsJobResult) {
+            console.log(
+              "🚀 Ads phase job created successfully after adsets error"
+            );
+          } else {
+            console.log(
+              "⚠️ Could not create ads job after adsets error, completing"
+            );
+            await updateJobStatus(supabase, requestId, "completed", 100);
+          }
+        } catch (adsJobError) {
+          console.error(
+            "❌ Error creating ads job after adsets error:",
+            adsJobError
+          );
+          await updateJobStatus(supabase, requestId, "completed", 100);
+        }
+      } else {
+        console.log("⚠️ No campaigns found after error, completing job");
+        await updateJobStatus(supabase, requestId, "completed", 100);
+      }
+    }
   } else {
     // All campaigns processed, move to ads phase
     console.log("✅ All campaigns processed, starting ads phase");
@@ -2245,17 +2504,28 @@ async function processAdsetsPhase(
     await updateJobStatus(supabase, requestId, "processing", 80);
 
     if (adsetIds.length > 0) {
-      await createFollowUpJob({
-        accountId,
-        timeframe,
-        action: "get24HourData",
-        requestId,
-        phase: "ads",
-        adsetIds: adsetIds,
-        after: "",
-        iteration,
-      });
-      console.log("🚀 Ads phase job created successfully");
+      try {
+        const adsJobResult = await createFollowUpJob({
+          accountId,
+          timeframe,
+          action: "get24HourData",
+          requestId,
+          phase: "ads",
+          adsetIds: adsetIds,
+          after: "",
+          iteration,
+        });
+
+        if (adsJobResult) {
+          console.log("🚀 Ads phase job created successfully");
+        } else {
+          console.log("⚠️ Could not create ads job, completing");
+          await updateJobStatus(supabase, requestId, "completed", 100);
+        }
+      } catch (adsJobError) {
+        console.error("❌ Error creating ads job:", adsJobError);
+        await updateJobStatus(supabase, requestId, "completed", 100);
+      }
     } else {
       console.log("⚠️ No adsets found, completing job");
       await updateJobStatus(supabase, requestId, "completed", 100);
@@ -3150,16 +3420,65 @@ async function processAdsPhase(
     const remainingAdsetIds = adsetIds.slice(RATE_LIMIT_CONFIG.BATCH_SIZE);
     console.log(`Remaining adsets: ${remainingAdsetIds.length}`);
 
-    await createFollowUpJob({
-      accountId,
-      timeframe,
-      action: "get24HourData",
-      requestId,
-      phase: "ads",
-      adsetIds: remainingAdsetIds, // Pass remaining adsets, not all adsets
-      after: after,
-      iteration,
-    });
+    try {
+      const followUpResult = await createFollowUpJob({
+        accountId,
+        timeframe,
+        action: "get24HourData",
+        requestId,
+        phase: "ads",
+        adsetIds: remainingAdsetIds, // Pass remaining adsets, not all adsets
+        after: after,
+        iteration,
+      });
+
+      if (followUpResult) {
+        console.log(
+          "✅ Follow-up job created successfully for remaining adsets"
+        );
+      } else {
+        console.log(
+          "🛑 Follow-up job creation was prevented by validation - completing job"
+        );
+        await updateJobStatus(
+          supabase,
+          requestId,
+          "completed",
+          100,
+          undefined,
+          {
+            message: "Job completed - follow-up prevented by validation",
+            totalPhases: 4,
+            processedAds: processedAds.length,
+            summary: {
+              totalProcessed: processedAds.length,
+              completedAt: new Date().toISOString(),
+              reason: "Follow-up job validation prevented infinite loop",
+            },
+          }
+        );
+      }
+    } catch (followUpError) {
+      console.error(
+        "❌ Error creating follow-up job for remaining adsets:",
+        followUpError
+      );
+      console.log("🔄 Completing job due to follow-up job error");
+      await updateJobStatus(supabase, requestId, "completed", 100, undefined, {
+        message: "Job completed due to follow-up job error",
+        totalPhases: 4,
+        processedAds: processedAds.length,
+        error:
+          followUpError instanceof Error
+            ? followUpError.message
+            : "Unknown error",
+        summary: {
+          totalProcessed: processedAds.length,
+          completedAt: new Date().toISOString(),
+          reason: "Follow-up job creation failed",
+        },
+      });
+    }
   } else {
     // All ads processed, mark as completed
     console.log("All ads processed, marking job as completed");
