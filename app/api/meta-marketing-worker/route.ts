@@ -731,6 +731,7 @@ async function handler(request: Request) {
 
   const supabase = await createClient();
   const startTime = Date.now();
+  let payload: ChunkedJobPayload | null = null;
 
   try {
     // 🚨 EMERGENCY DISABLE SWITCH
@@ -754,8 +755,13 @@ async function handler(request: Request) {
       "user-agent": request.headers.get("user-agent"),
     });
 
-    const payload: ChunkedJobPayload = await request.json();
+    payload = await request.json();
     console.log("Background job started with payload:", payload);
+
+    // Ensure payload is valid
+    if (!payload) {
+      throw new Error("Invalid payload received");
+    }
 
     // 🛡️ ENHANCED SAFETY CHECKS TO PREVENT INFINITE LOOPS
     const maxIterations = parseInt(process.env.MAX_WORKER_ITERATIONS || "50");
@@ -928,12 +934,27 @@ async function handler(request: Request) {
     }
 
     console.log("=== Background job phase completed successfully ===");
+    console.log("Phase result:", {
+      phase: result?.phase || phase,
+      completed: "completed" in result ? result.completed : false,
+      hasMoreAdsets: "hasMoreAdsets" in result ? result.hasMoreAdsets : false,
+      remainingAdsets: "remainingAdsets" in result ? result.remainingAdsets : 0,
+      processedAds: "processedAds" in result ? result.processedAds : 0,
+    });
+
+    // 🛡️ SAFETY CHECK: Ensure we don't return success if there's an error in the result
+    if (result && typeof result === "object" && "error" in result) {
+      console.error("Phase returned an error:", result.error);
+      throw new Error(`Phase ${phase} failed: ${result.error}`);
+    }
+
     return Response.json({
       success: true,
       requestId: payload.requestId,
       phase,
       iteration: currentIteration,
       result,
+      timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
     console.error("=== Background job failed ===");
@@ -942,12 +963,18 @@ async function handler(request: Request) {
 
     // Try to update job status to failed, but don't fail if we can't parse the request
     try {
-      // Try to get requestId from URL or headers if available
-      const url = new URL(request.url);
-      const requestIdFromHeader = request.headers.get("X-Request-ID");
-      const requestId = requestIdFromHeader || "unknown";
+      // Use the payload we already parsed, or fallback to headers
+      let requestId = "unknown";
 
-      console.log("Updating job status to failed...");
+      if (payload && payload.requestId) {
+        requestId = payload.requestId;
+      } else {
+        // Try to get requestId from headers as fallback
+        const requestIdFromHeader = request.headers.get("X-Request-ID");
+        requestId = requestIdFromHeader || "unknown";
+      }
+
+      console.log(`Updating job status to failed for requestId: ${requestId}`);
       await updateJobStatus(
         supabase,
         requestId,
@@ -964,7 +991,7 @@ async function handler(request: Request) {
       {
         success: false,
         error: error.message || "Unknown error occurred",
-        requestId: "unknown",
+        requestId: payload?.requestId || "unknown",
       },
       { status: 500 }
     );
@@ -1247,15 +1274,9 @@ async function processCampaignsPhase(
   try {
     const account = new AdAccount(accountId);
 
-    // 🔍 DEBUGGING: First, let's get a count of total campaigns
-    console.log("=== DEBUGGING CAMPAIGN FETCHING ===");
-
     // Get campaigns with comprehensive fields and NO FILTERING
     const campaignOptions: any = {
       limit: 100, // Increased to 100 to match ads and adsets limits for better throughput
-      // 🚨 CRITICAL FIX: Remove unsupported filtering field
-      // Facebook API doesn't support 'delivery_info.delivery_status' for filtering
-      // We'll fetch all campaigns and filter by status in code if needed
     };
 
     // Only add after parameter if it's not empty and looks like a valid cursor
@@ -1264,109 +1285,6 @@ async function processCampaignsPhase(
       campaignOptions.after = after;
     } else {
       console.log("Starting from the beginning (no cursor)");
-    }
-
-    console.log(
-      "🔍 Campaign fetch options:",
-      JSON.stringify(campaignOptions, null, 2)
-    );
-
-    // 🔍 DEBUGGING: Try to get campaign count first
-    try {
-      console.log("🔍 Attempting to get campaign summary...");
-      const campaignSummary = await withRateLimitRetry(
-        async () => {
-          return account.getCampaigns(["id", "name", "status"], {
-            limit: 1000,
-          });
-        },
-        {
-          accountId,
-          endpoint: "campaigns_summary",
-          callType: "READ",
-          points: RATE_LIMIT_CONFIG.POINTS.READ,
-          supabase,
-        }
-      );
-      console.log(
-        `🔍 Campaign summary: Found ${campaignSummary.length} campaigns total`
-      );
-
-      // Log first few campaign IDs and statuses for debugging
-      if (campaignSummary.length > 0) {
-        console.log(
-          "🔍 First 10 campaigns:",
-          campaignSummary.slice(0, 10).map((c: any) => ({
-            id: c.id,
-            name: c.name,
-            status: c.status,
-          }))
-        );
-      }
-
-      // 🔍 ENHANCED DEBUGGING: Get detailed breakdown of what's in the account
-      console.log("🔍 === ACCOUNT BREAKDOWN ANALYSIS ===");
-
-      for (const campaign of campaignSummary.slice(0, 6)) {
-        try {
-          // Get ad sets count for this campaign
-          const adSets = await withRateLimitRetry(
-            async () => {
-              const campaignObj = new Campaign(campaign.id);
-              return campaignObj.getAdSets(["id", "name", "status"], {
-                limit: 1000,
-              });
-            },
-            {
-              accountId,
-              endpoint: `campaign_${campaign.id}_adsets`,
-              callType: "READ",
-              points: RATE_LIMIT_CONFIG.POINTS.READ,
-              supabase,
-            }
-          );
-
-          // Get ads count for this campaign
-          const ads = await withRateLimitRetry(
-            async () => {
-              const campaignObj = new Campaign(campaign.id);
-              return campaignObj.getAds(["id", "name", "status"], {
-                limit: 1000,
-              });
-            },
-            {
-              accountId,
-              endpoint: `campaign_${campaign.id}_ads`,
-              callType: "READ",
-              points: RATE_LIMIT_CONFIG.POINTS.READ,
-              supabase,
-            }
-          );
-
-          console.log(`🔍 Campaign: ${campaign.name} (${campaign.status})`);
-          console.log(`   └── Ad Sets: ${adSets.length}`);
-          console.log(`   └── Ads: ${ads.length}`);
-
-          if (adSets.length > 0) {
-            console.log(`   └── Ad Set Details:`);
-            adSets.slice(0, 3).forEach((adSet: any, idx: number) => {
-              console.log(`       ${idx + 1}. ${adSet.name} (${adSet.status})`);
-            });
-            if (adSets.length > 3) {
-              console.log(`       ... and ${adSets.length - 3} more ad sets`);
-            }
-          }
-        } catch (detailError) {
-          console.warn(
-            `🔍 Could not get details for campaign ${campaign.name}:`,
-            detailError
-          );
-        }
-      }
-
-      console.log("🔍 === END ACCOUNT BREAKDOWN ===");
-    } catch (summaryError) {
-      console.warn("🔍 Could not get campaign summary:", summaryError);
     }
 
     const campaigns = await withRateLimitRetry(
@@ -1384,171 +1302,8 @@ async function processCampaignsPhase(
 
     console.log(`Retrieved ${campaigns.length} campaigns with current options`);
 
-    // 🔍 DEBUGGING: Log campaign details
-    if (campaigns.length > 0) {
-      console.log("🔍 Retrieved campaigns details:");
-      campaigns.slice(0, 5).forEach((campaign: any, index: number) => {
-        console.log(
-          `  ${index + 1}. ${campaign.name} (${campaign.id}) - Status: ${
-            campaign.status
-          }`
-        );
-      });
-    }
-
-    // 🔍 DEBUGGING: Check pagination info
-    try {
-      console.log("🔍 Pagination info:");
-      console.log("  - campaigns.length:", campaigns.length);
-      console.log(
-        "  - campaigns.hasNext:",
-        campaigns.hasNext ? campaigns.hasNext() : "N/A"
-      );
-      console.log("  - campaigns.paging:", campaigns.paging || "N/A");
-
-      if (campaigns.paging) {
-        console.log("  - cursors:", campaigns.paging.cursors || "N/A");
-        console.log("  - next:", campaigns.paging.next || "N/A");
-      }
-    } catch (pagingDebugError) {
-      console.warn("🔍 Error debugging pagination:", pagingDebugError);
-    }
-
-    // 🚨 FALLBACK STRATEGY: If we got very few campaigns, try alternative approaches
-    let finalCampaigns = campaigns;
-    if (campaigns.length < 50 && !after) {
-      // Only try fallbacks on first fetch
-      console.log(
-        "🔄 FALLBACK: Got fewer than 50 campaigns, trying alternative approaches..."
-      );
-
-      // FALLBACK 1: Try without any filtering
-      try {
-        console.log("🔄 FALLBACK 1: Trying without filtering...");
-        const fallbackCampaigns1 = await withRateLimitRetry(
-          async () => {
-            return account.getCampaigns(campaignFields, {
-              limit: 500, // Increase limit significantly
-            });
-          },
-          {
-            accountId,
-            endpoint: "campaigns_fallback1",
-            callType: "READ",
-            points: RATE_LIMIT_CONFIG.POINTS.READ,
-            supabase,
-          }
-        );
-        console.log(
-          `🔄 FALLBACK 1: Retrieved ${fallbackCampaigns1.length} campaigns without filtering`
-        );
-
-        if (fallbackCampaigns1.length > campaigns.length) {
-          console.log(
-            "✅ FALLBACK 1: Using unfiltered results (more campaigns found)"
-          );
-          finalCampaigns = fallbackCampaigns1;
-        }
-      } catch (fallback1Error) {
-        console.warn("🔄 FALLBACK 1 failed:", fallback1Error);
-      }
-
-      // FALLBACK 2: Try with different status filtering
-      if (finalCampaigns.length < 100) {
-        try {
-          console.log("🔄 FALLBACK 2: Trying with broader status filtering...");
-          const fallbackCampaigns2 = await withRateLimitRetry(
-            async () => {
-              return account.getCampaigns(campaignFields, {
-                limit: 500,
-                // 🚨 REMOVED: Facebook API doesn't support 'status' filtering for campaigns
-                // filtering: [
-                //   {
-                //     field: "status",
-                //     operator: "IN",
-                //     value: ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"],
-                //   },
-                // ],
-              });
-            },
-            {
-              accountId,
-              endpoint: "campaigns_fallback2",
-              callType: "READ",
-              points: RATE_LIMIT_CONFIG.POINTS.READ,
-              supabase,
-            }
-          );
-          console.log(
-            `🔄 FALLBACK 2: Retrieved ${fallbackCampaigns2.length} campaigns without filtering`
-          );
-
-          if (fallbackCampaigns2.length > finalCampaigns.length) {
-            console.log(
-              "✅ FALLBACK 2: Using unfiltered results (more campaigns found)"
-            );
-            finalCampaigns = fallbackCampaigns2;
-          }
-        } catch (fallback2Error) {
-          console.warn("🔄 FALLBACK 2 failed:", fallback2Error);
-        }
-      }
-
-      // FALLBACK 3: Try with time range filtering (get campaigns from last 2 years)
-      if (finalCampaigns.length < 100) {
-        try {
-          console.log("🔄 FALLBACK 3: Trying with time range filtering...");
-          const twoYearsAgo = new Date();
-          twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
-
-          const fallbackCampaigns3 = await withRateLimitRetry(
-            async () => {
-              return account.getCampaigns(campaignFields, {
-                limit: 500,
-                time_range: {
-                  since: twoYearsAgo.toISOString().split("T")[0],
-                  until: new Date().toISOString().split("T")[0],
-                },
-              });
-            },
-            {
-              accountId,
-              endpoint: "campaigns_fallback3",
-              callType: "READ",
-              points: RATE_LIMIT_CONFIG.POINTS.READ,
-              supabase,
-            }
-          );
-          console.log(
-            `🔄 FALLBACK 3: Retrieved ${fallbackCampaigns3.length} campaigns with time range`
-          );
-
-          if (fallbackCampaigns3.length > finalCampaigns.length) {
-            console.log(
-              "✅ FALLBACK 3: Using time-range filtered results (more campaigns found)"
-            );
-            finalCampaigns = fallbackCampaigns3;
-          }
-        } catch (fallback3Error) {
-          console.warn("🔄 FALLBACK 3 failed:", fallback3Error);
-        }
-      }
-    }
-
-    // Update campaigns reference to use the best result
-    const campaignsToProcess = finalCampaigns;
-    console.log(`📊 FINAL: Processing ${campaignsToProcess.length} campaigns`);
-
-    if (campaignsToProcess.length !== campaigns.length) {
-      console.log(
-        `📊 IMPROVEMENT: Fallback strategy found ${
-          campaignsToProcess.length - campaigns.length
-        } additional campaigns`
-      );
-    }
-
     // Process each campaign
-    for (let i = 0; i < campaignsToProcess.length; i++) {
+    for (let i = 0; i < campaigns.length; i++) {
       // Check time limit frequently
       if (shouldCreateFollowUpJob(startTime)) {
         console.log(`Time limit reached after processing ${i} campaigns`);
@@ -1556,9 +1311,9 @@ async function processCampaignsPhase(
         // Get the proper next cursor from the campaigns object
         let nextCursor = "";
         try {
-          if (campaignsToProcess.hasNext && campaignsToProcess.hasNext()) {
+          if (campaigns.hasNext && campaigns.hasNext()) {
             // Try to get the next cursor from the campaigns object
-            const paging = campaignsToProcess.paging;
+            const paging = campaigns.paging;
             nextCursor = paging?.cursors?.after || "";
             console.log(`Got next cursor from paging: ${nextCursor}`);
           }
@@ -1582,14 +1337,13 @@ async function processCampaignsPhase(
         break;
       }
 
-      const campaign = campaignsToProcess[i];
-      const progress =
-        40 + Math.floor(((i + 1) / campaignsToProcess.length) * 20); // 40% to 60%
+      const campaign = campaigns[i];
+      const progress = 40 + Math.floor(((i + 1) / campaigns.length) * 20); // 40% to 60%
 
       console.log(
-        `Processing campaign ${i + 1}/${campaignsToProcess.length}: ${
-          campaign.name
-        } (${campaign.id})`
+        `Processing campaign ${i + 1}/${campaigns.length}: ${campaign.name} (${
+          campaign.id
+        })`
       );
       console.log(`Progress: ${progress}%`);
       console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
@@ -1597,7 +1351,7 @@ async function processCampaignsPhase(
       await updateJobStatus(supabase, requestId, "processing", progress);
 
       try {
-        // Get insights for this campaign - ALWAYS try to fetch insights
+        // Get insights for this campaign
         let campaignInsights = null;
         console.log(`🔍 Getting insights for campaign ${campaign.id}...`);
 
@@ -1687,17 +1441,6 @@ async function processCampaignsPhase(
         };
 
         console.log(`💾 Attempting to store campaign ${campaign.id}`);
-        console.log(`📋 Campaign data structure:`, {
-          campaign_id: campaignData.campaign_id,
-          account_id: campaignData.account_id,
-          name: campaignData.name,
-          status: campaignData.status,
-          objective: campaignData.objective,
-          buying_type: campaignData.buying_type,
-          bid_strategy: campaignData.bid_strategy,
-          daily_budget: campaignData.daily_budget,
-          lifetime_budget: campaignData.lifetime_budget,
-        });
 
         const { error: campaignError } = await supabase
           .from("meta_campaigns")
@@ -1710,14 +1453,6 @@ async function processCampaignsPhase(
           console.error(
             `❌ Error storing campaign ${campaign.id}:`,
             campaignError
-          );
-          console.error(`❌ Error code:`, campaignError.code);
-          console.error(`❌ Error message:`, campaignError.message);
-          console.error(`❌ Error details:`, campaignError.details);
-          console.error(`❌ Error hint:`, campaignError.hint);
-          console.error(
-            `❌ Campaign data that failed:`,
-            JSON.stringify(campaignData, null, 2)
           );
           totalErrors++;
         } else {
@@ -1739,34 +1474,6 @@ async function processCampaignsPhase(
     console.log(`Total campaigns processed: ${processedCampaigns.length}`);
     console.log(`Total errors: ${totalErrors}`);
     console.log(`Campaign IDs collected: ${campaignIds.length}`);
-    console.log(`Campaign IDs: ${campaignIds.join(", ")}`);
-    console.log(`Original fetch returned: ${campaigns.length} campaigns`);
-    console.log(
-      `Final processing used: ${campaignsToProcess.length} campaigns`
-    );
-    console.log(
-      `Fallback strategy improvement: ${
-        campaignsToProcess.length - campaigns.length
-      } additional campaigns`
-    );
-    console.log(
-      `Success rate: ${(
-        (processedCampaigns.length / campaignsToProcess.length) *
-        100
-      ).toFixed(1)}%`
-    );
-
-    // 🔍 DEBUGGING: Log campaign statuses
-    if (processedCampaigns.length > 0) {
-      const statusCounts = processedCampaigns.reduce(
-        (acc: any, campaign: any) => {
-          acc[campaign.status] = (acc[campaign.status] || 0) + 1;
-          return acc;
-        },
-        {}
-      );
-      console.log(`Campaign status distribution:`, statusCounts);
-    }
 
     // Determine next action using proper pagination
     let hasMore = false;
@@ -1774,9 +1481,9 @@ async function processCampaignsPhase(
 
     try {
       // Check if there are more campaigns using the Facebook SDK pagination
-      if (campaignsToProcess.hasNext && campaignsToProcess.hasNext()) {
+      if (campaigns.hasNext && campaigns.hasNext()) {
         hasMore = true;
-        const paging = campaignsToProcess.paging;
+        const paging = campaigns.paging;
         nextCursor = paging?.cursors?.after || "";
         console.log(`Has more campaigns. Next cursor: ${nextCursor}`);
 
@@ -1784,19 +1491,6 @@ async function processCampaignsPhase(
         if (nextCursor === after) {
           console.log(
             `🛑 PAGINATION SAFETY: Same cursor detected, stopping pagination`
-          );
-          console.log(`Current cursor: ${after}, Next cursor: ${nextCursor}`);
-          hasMore = false;
-          nextCursor = "";
-        }
-
-        // 🛡️ SAFETY CHECK: Limit total campaigns processed per account
-        const maxCampaignsPerAccount = parseInt(
-          process.env.MAX_CAMPAIGNS_PER_ACCOUNT || "1000"
-        );
-        if (processedCampaigns.length >= maxCampaignsPerAccount) {
-          console.log(
-            `🛑 CAMPAIGN LIMIT: Reached maximum campaigns (${maxCampaignsPerAccount})`
           );
           hasMore = false;
           nextCursor = "";
@@ -1822,7 +1516,6 @@ async function processCampaignsPhase(
       // More campaigns to fetch
       console.log("🔄 Creating follow-up job for more campaigns");
       console.log(`Next cursor: ${nextCursor}`);
-      console.log(`Previous cursor: ${after}`);
 
       try {
         const followUpResult = await createFollowUpJob({
@@ -1841,7 +1534,7 @@ async function processCampaignsPhase(
           console.log(
             "🛑 Follow-up job creation was prevented by validation - moving to adsets phase"
           );
-          // If follow-up job creation was prevented, move to next phase
+          // Move to next phase
           await updateJobStatus(supabase, requestId, "processing", 60);
 
           if (campaignIds.length > 0) {
@@ -1872,7 +1565,7 @@ async function processCampaignsPhase(
           "❌ Error creating follow-up job for campaigns:",
           followUpError
         );
-        // If we can't create follow-up job, move to next phase
+        // Move to next phase
         console.log("🔄 Moving to adsets phase due to follow-up job error");
         await updateJobStatus(supabase, requestId, "processing", 60);
 
@@ -1915,17 +1608,6 @@ async function processCampaignsPhase(
       // All campaigns processed, move to adsets phase
       console.log("✅ All campaigns processed, starting adsets phase");
       console.log(`Total campaign IDs collected: ${campaignIds.length}`);
-      console.log(
-        `Reason for stopping: ${
-          !hasMore
-            ? "No more data"
-            : !nextCursor
-            ? "No cursor"
-            : nextCursor === after
-            ? "Same cursor"
-            : "Time limit"
-        }`
-      );
       await updateJobStatus(supabase, requestId, "processing", 60);
 
       if (campaignIds.length > 0) {
@@ -1973,7 +1655,7 @@ async function processCampaignsPhase(
   }
 }
 
-// Process adsets phase (implement similar chunking logic)
+// Process adsets phase
 async function processAdsetsPhase(
   accountId: string,
   supabase: any,
@@ -1984,126 +1666,22 @@ async function processAdsetsPhase(
   startTime: number,
   iteration: number
 ) {
-  console.log("=== ADSETS PHASE DEBUG START ===");
-  console.log(`Account ID: ${accountId}`);
-  console.log(`Request ID: ${requestId}`);
-  console.log(`Campaign IDs received: ${JSON.stringify(campaignIds)}`);
-  console.log(`Campaign IDs count: ${campaignIds.length}`);
-  console.log(`After cursor: ${after || "none"}`);
-  console.log(`Timeframe: ${timeframe}`);
-  console.log(`Start time: ${new Date(startTime).toISOString()}`);
-  console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
-
   // Check for cancellation at the start
   if (await checkJobCancellation(supabase, requestId)) {
     console.log("Job cancelled, stopping adsets phase");
     return { phase: "adsets", status: "cancelled" };
   }
 
-  // Ensure account exists in meta_account_insights before processing adsets
-  console.log("=== CHECKING ACCOUNT EXISTS ===");
-  const { data: accountExists, error: accountCheckError } = await supabase
-    .from("meta_account_insights")
-    .select("account_id")
-    .eq("account_id", accountId)
-    .single();
-
-  console.log("Account check result:", { accountExists, accountCheckError });
-
-  if (accountCheckError || !accountExists) {
-    console.error(
-      "Account not found in meta_account_insights:",
-      accountCheckError
-    );
-    throw new Error(
-      `Account ${accountId} must be processed before adsets. Please run account phase first.`
-    );
-  }
-
-  console.log("✅ Account exists in meta_account_insights");
-
-  // FALLBACK: If no campaign IDs provided, try to get them from database
-  let finalCampaignIds = campaignIds;
-  if (!campaignIds || campaignIds.length === 0) {
-    console.log(
-      "⚠️ No campaign IDs provided, attempting to retrieve from database..."
-    );
-
-    const { data: dbCampaigns, error: dbCampaignsError } = await supabase
-      .from("meta_campaigns")
-      .select("campaign_id")
-      .eq("account_id", accountId)
-      .order("created_at", { ascending: false });
-
-    console.log("Database campaigns query result:", {
-      count: dbCampaigns?.length || 0,
-      error: dbCampaignsError,
-      sampleIds: dbCampaigns?.slice(0, 5).map((c: any) => c.campaign_id) || [],
-    });
-
-    if (dbCampaignsError) {
-      console.error(
-        "❌ Error retrieving campaigns from database:",
-        dbCampaignsError
-      );
-      throw new Error(
-        `Failed to retrieve campaigns from database: ${dbCampaignsError.message}`
-      );
-    }
-
-    if (!dbCampaigns || dbCampaigns.length === 0) {
-      console.error(
-        "❌ No campaigns found in database for account:",
-        accountId
-      );
-      throw new Error(
-        "No campaigns found in database. Please run campaigns phase first."
-      );
-    }
-
-    finalCampaignIds = dbCampaigns.map((c: any) => c.campaign_id);
-    console.log(
-      `✅ Retrieved ${finalCampaignIds.length} campaign IDs from database`
-    );
-    console.log(
-      `Campaign IDs from DB: ${finalCampaignIds.slice(0, 10).join(", ")}${
-        finalCampaignIds.length > 10 ? "..." : ""
-      }`
-    );
-  }
-
-  // Validate campaign IDs
-  if (!finalCampaignIds || finalCampaignIds.length === 0) {
-    console.error("❌ No campaign IDs available to process adsets");
-    throw new Error("No campaign IDs available to process adsets");
-  }
-
   console.log("=== PROCESSING ADSETS PHASE ===");
-  console.log(`Campaign IDs to process: ${finalCampaignIds.length}`);
-  console.log(
-    `Campaign IDs: ${finalCampaignIds.slice(0, 10).join(", ")}${
-      finalCampaignIds.length > 10 ? "..." : ""
-    }`
-  );
+  console.log(`Campaign IDs to process: ${campaignIds.length}`);
 
   // Process campaigns in batches
-  const batchSize = Math.min(
-    RATE_LIMIT_CONFIG.BATCH_SIZE,
-    finalCampaignIds.length
-  );
-  const currentBatch = finalCampaignIds.slice(0, batchSize);
-  const remainingCampaigns = finalCampaignIds.slice(batchSize);
-
-  console.log(`=== BATCH PROCESSING ===`);
-  console.log(`Batch size: ${batchSize}`);
-  console.log(`Current batch: ${currentBatch.length} campaigns`);
-  console.log(`Current batch IDs: ${currentBatch.join(", ")}`);
-  console.log(`Remaining campaigns: ${remainingCampaigns.length}`);
+  const batchSize = Math.min(RATE_LIMIT_CONFIG.BATCH_SIZE, campaignIds.length);
+  const currentBatch = campaignIds.slice(0, batchSize);
+  const remainingCampaigns = campaignIds.slice(batchSize);
 
   const processedAdsets = [];
   const adsetIds = [];
-  let totalAdsetsFound = 0;
-  let totalAdsetsStored = 0;
   let totalErrors = 0;
 
   // Enhanced fields for comprehensive adset data collection
@@ -2138,10 +1716,6 @@ async function processAdsetsPhase(
   ];
 
   for (let i = 0; i < currentBatch.length; i++) {
-    console.log(
-      `\n=== PROCESSING CAMPAIGN ${i + 1}/${currentBatch.length} ===`
-    );
-
     // Check time limit more frequently
     if (shouldCreateFollowUpJob(startTime)) {
       console.log(
@@ -2166,24 +1740,18 @@ async function processAdsetsPhase(
 
     console.log(`Campaign ID: ${campaignId}`);
     console.log(`Progress: ${progress}%`);
-    console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
     await updateJobStatus(supabase, requestId, "processing", progress);
 
     try {
-      console.log(`🔍 Creating Campaign object for ID: ${campaignId}`);
       const campaign = new Campaign(campaignId);
-
-      console.log(`📡 Fetching adsets for campaign ${campaignId}...`);
 
       // Get adsets for this campaign with comprehensive fields
       const adsetsResponse = await withRateLimitRetry(
         async () => {
           const campaign = new Campaign(campaignId);
-          // 🚨 CRITICAL FIX: Try to get ALL adsets regardless of status
           return campaign.getAdSets(adsetFields, {
             limit: 500, // Significantly increased limit
-            // Try without filtering first to get all adsets
           });
         },
         {
@@ -2195,120 +1763,26 @@ async function processAdsetsPhase(
         }
       );
 
-      console.log(`📊 Raw adsets response type: ${typeof adsetsResponse}`);
-
       // More detailed response parsing
       let adsets: any[] = [];
       if (Array.isArray(adsetsResponse)) {
         adsets = adsetsResponse;
-        console.log(`📊 Response is array with ${adsets.length} items`);
       } else if (adsetsResponse && typeof adsetsResponse === "object") {
         const responseObj = adsetsResponse as any;
         if (responseObj.data) {
           adsets = responseObj.data;
-          console.log(
-            `📊 Response has data property with ${adsets.length} items`
-          );
         } else if (responseObj.length !== undefined) {
           adsets = Array.from(responseObj);
-          console.log(`📊 Response is array-like with ${adsets.length} items`);
-        } else {
-          console.log(
-            `📊 Response object structure:`,
-            Object.keys(responseObj)
-          );
-          adsets = [];
         }
-      } else {
-        console.log(
-          `📊 Response is neither array nor object:`,
-          typeof adsetsResponse
-        );
       }
 
       console.log(
         `✅ Found ${adsets.length} adsets for campaign ${campaignId}`
       );
-      totalAdsetsFound += adsets.length;
-
-      // 🚨 FALLBACK: If we got very few adsets, try alternative approaches
-      if (adsets.length < 10) {
-        console.log(
-          `🔄 ADSETS FALLBACK: Got only ${adsets.length} adsets for campaign ${campaignId}, trying alternatives...`
-        );
-
-        try {
-          console.log(
-            "🔄 ADSETS FALLBACK: Trying without filtering (increased limit)..."
-          );
-          const fallbackAdsets = await withRateLimitRetry(
-            async () => {
-              const campaign = new Campaign(campaignId);
-              return campaign.getAdSets(adsetFields, {
-                limit: 500,
-                // 🚨 REMOVED: Facebook API doesn't support 'status' filtering for adsets
-                // filtering: [
-                //   {
-                //     field: "status",
-                //     operator: "IN",
-                //     value: ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"],
-                //   },
-                // ],
-              });
-            },
-            {
-              accountId,
-              endpoint: "adsets_fallback",
-              callType: "READ",
-              points: RATE_LIMIT_CONFIG.POINTS.READ,
-              supabase,
-            }
-          );
-
-          let fallbackAdsetsArray: any[] = [];
-          if (Array.isArray(fallbackAdsets)) {
-            fallbackAdsetsArray = fallbackAdsets;
-          } else if (fallbackAdsets && typeof fallbackAdsets === "object") {
-            const responseObj = fallbackAdsets as any;
-            if (responseObj.data) {
-              fallbackAdsetsArray = responseObj.data;
-            } else if (responseObj.length !== undefined) {
-              fallbackAdsetsArray = Array.from(responseObj);
-            }
-          }
-
-          console.log(
-            `🔄 ADSETS FALLBACK: Retrieved ${fallbackAdsetsArray.length} adsets without filtering`
-          );
-
-          if (fallbackAdsetsArray.length > adsets.length) {
-            console.log(
-              "✅ ADSETS FALLBACK: Using unfiltered results (more adsets found)"
-            );
-            adsets = fallbackAdsetsArray;
-            totalAdsetsFound =
-              totalAdsetsFound -
-              (adsets.length - fallbackAdsetsArray.length) +
-              fallbackAdsetsArray.length;
-          }
-        } catch (adsetsFallbackError) {
-          console.warn("🔄 ADSETS FALLBACK failed:", adsetsFallbackError);
-        }
-      }
 
       if (adsets.length === 0) {
         console.log(`⚠️ No adsets found for campaign ${campaignId}`);
         continue;
-      }
-
-      // Log first adset details for debugging
-      if (adsets.length > 0) {
-        console.log(`📋 First adset details:`, {
-          id: adsets[0].id,
-          name: adsets[0].name,
-          status: adsets[0].status,
-          campaign_id: campaignId,
-        });
       }
 
       // Process each adset
@@ -2317,10 +1791,9 @@ async function processAdsetsPhase(
         console.log(`\n--- Processing adset ${j + 1}/${adsets.length} ---`);
         console.log(`Adset ID: ${adset.id}`);
         console.log(`Adset name: ${adset.name}`);
-        console.log(`Adset status: ${adset.status}`);
 
         try {
-          // Get insights for this adset - ALWAYS try to fetch insights
+          // Get insights for this adset
           let adsetInsights = null;
           console.log(`🔍 Getting insights for adset ${adset.id}...`);
 
@@ -2333,12 +1806,7 @@ async function processAdsetsPhase(
             );
 
             if (adsetInsights) {
-              console.log(`✅ Adset insights retrieved for ${adset.id}:`, {
-                impressions: adsetInsights.impressions,
-                clicks: adsetInsights.clicks,
-                spend: adsetInsights.spend,
-                actions: adsetInsights.actions?.length || 0,
-              });
+              console.log(`✅ Adset insights retrieved for ${adset.id}`);
             } else {
               console.log(`⚠️ No insights data for adset ${adset.id}`);
             }
@@ -2347,11 +1815,10 @@ async function processAdsetsPhase(
               `❌ Error fetching insights for adset ${adset.id}:`,
               insightsError
             );
-            // Continue processing even if insights fail
             adsetInsights = null;
           }
 
-          // Create comprehensive adset data structure with all database fields
+          // Create comprehensive adset data structure
           const adsetData = {
             ad_set_id: adset.id,
             campaign_id: campaignId,
@@ -2416,97 +1883,48 @@ async function processAdsetsPhase(
           };
 
           console.log(`💾 Attempting to store adset ${adset.id}`);
-          console.log(`📋 Adset data structure:`, {
-            ad_set_id: adsetData.ad_set_id,
-            campaign_id: adsetData.campaign_id,
-            account_id: adsetData.account_id,
-            name: adsetData.name,
-            status: adsetData.status,
-            targeting: typeof adsetData.targeting,
-            start_time: adsetData.start_time,
-            end_time: adsetData.end_time,
-          });
 
-          console.log(`🗄️ Making upsert call to meta_ad_sets table...`);
-          const { data: upsertData, error: adsetError } = await supabase
+          const { error: adsetError } = await supabase
             .from("meta_ad_sets")
             .upsert([adsetData], {
               onConflict: "ad_set_id",
               ignoreDuplicates: false,
-            })
-            .select(); // Add select to see what was actually inserted
-
-          console.log(`📤 Upsert response:`, { upsertData, adsetError });
+            });
 
           if (adsetError) {
             console.error(`❌ Error storing adset ${adset.id}:`, adsetError);
-            console.error(`❌ Error code:`, adsetError.code);
-            console.error(`❌ Error message:`, adsetError.message);
-            console.error(`❌ Error details:`, adsetError.details);
-            console.error(`❌ Error hint:`, adsetError.hint);
-            console.error(
-              `❌ Adset data that failed:`,
-              JSON.stringify(adsetData, null, 2)
-            );
             totalErrors++;
-            // Continue processing other adsets even if one fails
           } else {
             console.log(`✅ Successfully stored adset ${adset.id}`);
-            console.log(`✅ Upserted data:`, upsertData);
             processedAdsets.push(adsetData);
             adsetIds.push(adset.id);
-            totalAdsetsStored++;
           }
 
-          // Small delay between adsets
           await delay(RATE_LIMIT_CONFIG.ADSET_DELAY);
         } catch (error: any) {
           console.error(`❌ Error processing adset ${adset.id}:`, error);
-          console.error(`❌ Error stack:`, error.stack);
           totalErrors++;
           continue;
         }
       }
 
-      // Delay between campaigns
       await delay(RATE_LIMIT_CONFIG.CAMPAIGN_DELAY);
     } catch (error: any) {
       console.error(`❌ Error processing campaign ${campaignId}:`, error);
-      console.error(`❌ Error stack:`, error.stack);
       totalErrors++;
       continue;
     }
   }
 
   console.log(`\n=== ADSETS PHASE SUMMARY ===`);
-  console.log(`Total adsets found: ${totalAdsetsFound}`);
   console.log(`Total adsets processed: ${processedAdsets.length}`);
   console.log(`Total errors: ${totalErrors}`);
   console.log(`Adset IDs collected: ${adsetIds.length}`);
-  console.log(`Adset IDs: ${adsetIds.join(", ")}`);
-  console.log(
-    `Success rate: ${
-      totalAdsetsFound > 0
-        ? ((processedAdsets.length / totalAdsetsFound) * 100).toFixed(1)
-        : 0
-    }%`
-  );
-
-  // 🔍 DEBUGGING: Log adset statuses
-  if (processedAdsets.length > 0) {
-    const statusCounts = processedAdsets.reduce((acc: any, adset: any) => {
-      acc[adset.status] = (acc[adset.status] || 0) + 1;
-      return acc;
-    }, {});
-    console.log(`Adset status distribution:`, statusCounts);
-  }
 
   // Determine next action
   if (remainingCampaigns.length > 0) {
     // More campaigns to process
     console.log("🔄 Creating follow-up job for remaining campaigns");
-    console.log(`Remaining campaigns: ${remainingCampaigns.length}`);
-    console.log(`Remaining campaign IDs: ${remainingCampaigns.join(", ")}`);
 
     try {
       const followUpResult = await createFollowUpJob({
@@ -2524,118 +1942,72 @@ async function processAdsetsPhase(
         console.log(
           "✅ Follow-up job created successfully for remaining campaigns"
         );
+        return {
+          processedAdsets: processedAdsets.length,
+          phase: "adsets",
+          after: after,
+          remainingTime: getRemainingTime(startTime),
+          completed: false,
+          hasMoreAdsets: true,
+          remainingAdsets: remainingCampaigns.length,
+        };
       } else {
         console.log(
-          "🛑 Follow-up job creation was prevented by validation - moving to ads phase"
+          "🛑 Follow-up job creation was prevented by validation - completing job"
         );
-        // If follow-up job creation was prevented, move to next phase
-        await updateJobStatus(supabase, requestId, "processing", 80);
-
-        if (adsetIds.length > 0) {
-          const adsJobResult = await createFollowUpJob({
-            accountId,
-            timeframe,
-            action: "get24HourData",
-            requestId,
-            phase: "ads",
-            adsetIds: adsetIds,
-            after: "",
-            iteration,
-          });
-
-          if (adsJobResult) {
-            console.log("🚀 Ads phase job created successfully");
-          } else {
-            console.log("⚠️ Could not create ads job, completing");
-            await updateJobStatus(supabase, requestId, "completed", 100);
+        await updateJobStatus(
+          supabase,
+          requestId,
+          "completed",
+          100,
+          undefined,
+          {
+            message: "Job completed - follow-up prevented by validation",
+            totalPhases: 4,
+            processedAds: processedAdsets.length,
+            summary: {
+              totalProcessed: processedAdsets.length,
+              completedAt: new Date().toISOString(),
+              reason: "Follow-up job validation prevented infinite loop",
+            },
           }
-        } else {
-          console.log("⚠️ No adsets found, completing job");
-          await updateJobStatus(supabase, requestId, "completed", 100);
-        }
+        );
       }
     } catch (followUpError) {
       console.error(
-        "❌ Error creating follow-up job for remaining campaigns:",
+        "❌ Error creating follow-up job for remaining adsets:",
         followUpError
       );
-      // If we can't create follow-up job, move to next phase
-      console.log("🔄 Moving to ads phase due to follow-up job error");
-      await updateJobStatus(supabase, requestId, "processing", 80);
-
-      if (adsetIds.length > 0) {
-        try {
-          const adsJobResult = await createFollowUpJob({
-            accountId,
-            timeframe,
-            action: "get24HourData",
-            requestId,
-            phase: "ads",
-            adsetIds: adsetIds,
-            after: "",
-            iteration,
-          });
-
-          if (adsJobResult) {
-            console.log(
-              "🚀 Ads phase job created successfully after adsets error"
-            );
-          } else {
-            console.log(
-              "⚠️ Could not create ads job after adsets error, completing"
-            );
-            await updateJobStatus(supabase, requestId, "completed", 100);
-          }
-        } catch (adsJobError) {
-          console.error(
-            "❌ Error creating ads job after adsets error:",
-            adsJobError
-          );
-          await updateJobStatus(supabase, requestId, "completed", 100);
-        }
-      } else {
-        console.log("⚠️ No campaigns found after error, completing job");
-        await updateJobStatus(supabase, requestId, "completed", 100);
-      }
+      console.log("🔄 Completing job due to follow-up job error");
+      await updateJobStatus(supabase, requestId, "completed", 100, undefined, {
+        message: "Job completed due to follow-up job error",
+        totalPhases: 4,
+        processedAds: processedAdsets.length,
+        error:
+          followUpError instanceof Error
+            ? followUpError.message
+            : "Unknown error",
+        summary: {
+          totalProcessed: processedAdsets.length,
+          completedAt: new Date().toISOString(),
+          reason: "Follow-up job creation failed",
+        },
+      });
     }
   } else {
-    // All campaigns processed, move to ads phase
-    console.log("✅ All campaigns processed, starting ads phase");
-    console.log(`Total adset IDs collected: ${adsetIds.length}`);
-    console.log(
-      `Adset IDs: ${adsetIds.slice(0, 5).join(", ")}${
-        adsetIds.length > 5 ? "..." : ""
-      }`
-    );
-    await updateJobStatus(supabase, requestId, "processing", 80);
-
-    if (adsetIds.length > 0) {
-      try {
-        const adsJobResult = await createFollowUpJob({
-          accountId,
-          timeframe,
-          action: "get24HourData",
-          requestId,
-          phase: "ads",
-          adsetIds: adsetIds,
-          after: "",
-          iteration,
-        });
-
-        if (adsJobResult) {
-          console.log("🚀 Ads phase job created successfully");
-        } else {
-          console.log("⚠️ Could not create ads job, completing");
-          await updateJobStatus(supabase, requestId, "completed", 100);
-        }
-      } catch (adsJobError) {
-        console.error("❌ Error creating ads job:", adsJobError);
-        await updateJobStatus(supabase, requestId, "completed", 100);
-      }
-    } else {
-      console.log("⚠️ No adsets found, completing job");
-      await updateJobStatus(supabase, requestId, "completed", 100);
-    }
+    // All ads processed, mark as completed
+    console.log("🎉 ALL ADS PROCESSED - NO MORE ADSETS REMAINING");
+    console.log(`Total ads processed in this batch: ${processedAdsets.length}`);
+    await updateJobStatus(supabase, requestId, "completed", 100, undefined, {
+      message: "All phases completed successfully",
+      totalPhases: 4,
+      processedAds: processedAdsets.length,
+      summary: {
+        totalProcessed: processedAdsets.length,
+        completedAt: new Date().toISOString(),
+        reason: "All adsets processed successfully",
+      },
+    });
   }
 
   return {
@@ -2644,10 +2016,12 @@ async function processAdsetsPhase(
     after: after,
     remainingTime: getRemainingTime(startTime),
     completed: remainingCampaigns.length === 0,
+    hasMoreAdsets: remainingCampaigns.length > 0,
+    remainingAdsets: remainingCampaigns.length,
   };
 }
 
-// Process ads phase (implement similar chunking logic)
+// Process ads phase
 async function processAdsPhase(
   accountId: string,
   supabase: any,
@@ -2716,421 +2090,6 @@ async function processAdsPhase(
     "url_tags",
   ];
 
-  // Helper function to fetch creative details with retries and FORCE asset_feed_spec
-  async function fetchCreativeWithRetry(
-    creativeId: string,
-    maxRetries = 5 // Increased retries for critical data
-  ): Promise<any> {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        console.log(
-          `🎨 Fetching creative ${creativeId} (attempt ${attempt}/${maxRetries})`
-        );
-
-        const creative = await withRateLimitRetry(
-          async () => {
-            const { AdCreative } = require("facebook-nodejs-business-sdk");
-            const creativeObj = new AdCreative(creativeId);
-            return creativeObj.read([
-              "id",
-              "name",
-              "title",
-              "body",
-              "object_type",
-              "thumbnail_url",
-              "image_url",
-              "video_id",
-              "url_tags",
-              "template_url",
-              "instagram_permalink_url",
-              "effective_object_story_id",
-              "asset_feed_spec",
-              "object_story_spec",
-              "platform_customizations",
-            ]);
-          },
-          {
-            accountId,
-            endpoint: "creative",
-            callType: "READ",
-            points: RATE_LIMIT_CONFIG.POINTS.READ,
-            supabase,
-          }
-        );
-
-        console.log(`✅ Successfully fetched creative ${creativeId}`);
-
-        // CRITICAL: If we have creative data but no asset_feed_spec, create fallback
-        if (creative && !creative.asset_feed_spec) {
-          console.log(
-            `⚠️ Creative ${creativeId} missing asset_feed_spec, creating fallback...`
-          );
-
-          // Create fallback asset_feed_spec from available data
-          let fallbackAssetFeedSpec = null;
-
-          if (creative.object_story_spec?.link_data) {
-            const linkData = creative.object_story_spec.link_data;
-            fallbackAssetFeedSpec = {
-              _fallback_source: "OBJECT_STORY_SPEC",
-              ...(linkData.video_id && {
-                videos: [{ video_id: linkData.video_id }],
-              }),
-              ...(linkData.image_hash && {
-                images: [{ image_hash: linkData.image_hash }],
-              }),
-              ...(linkData.picture && {
-                images: [{ picture: linkData.picture }],
-              }),
-              ...(linkData.call_to_action && {
-                call_to_action: linkData.call_to_action,
-              }),
-              ...(linkData.description && {
-                description: linkData.description,
-              }),
-              ...(linkData.link && {
-                link_url: linkData.link,
-              }),
-            };
-          } else if (creative.video_id) {
-            fallbackAssetFeedSpec = {
-              _fallback_source: "VIDEO_ID",
-              videos: [
-                {
-                  video_id: creative.video_id,
-                  ...(creative.thumbnail_url && {
-                    thumbnail_url: creative.thumbnail_url,
-                  }),
-                },
-              ],
-            };
-          } else if (creative.image_url) {
-            fallbackAssetFeedSpec = {
-              _fallback_source: "IMAGE_URL",
-              images: [{ url: creative.image_url }],
-            };
-          }
-
-          if (fallbackAssetFeedSpec) {
-            creative.asset_feed_spec = fallbackAssetFeedSpec;
-            console.log(
-              `✅ Created fallback asset_feed_spec for creative ${creativeId}`
-            );
-          } else {
-            console.error(
-              `❌ CRITICAL: Could not create asset_feed_spec for creative ${creativeId}`
-            );
-            creative.asset_feed_spec = {
-              _fallback_source: "FAILED_TO_EXTRACT",
-              error: "No extractable asset data found",
-            };
-          }
-        }
-
-        return creative;
-      } catch (error: any) {
-        console.error(
-          `❌ Creative fetch attempt ${attempt} failed for ${creativeId}:`,
-          error
-        );
-
-        // Check if it's a deleted creative or permission error
-        if (
-          error.response?.error?.code === 803 ||
-          error.response?.error?.message?.includes("does not exist") ||
-          error.response?.error?.message?.includes("not found")
-        ) {
-          console.log(`🗑️ Creative ${creativeId} appears to be deleted`);
-          return {
-            _deleted: true,
-            asset_feed_spec: {
-              _fallback_source: "DELETED_CREATIVE",
-              error: "Creative was deleted",
-            },
-          };
-        }
-
-        if (attempt >= maxRetries) {
-          console.error(
-            `❌ All retry attempts failed for creative ${creativeId}, creating emergency fallback`
-          );
-          return {
-            _fetch_failed: true,
-            asset_feed_spec: {
-              _fallback_source: "FETCH_FAILED_EMERGENCY",
-              error: error.response?.error?.message || "Unknown fetch error",
-              creative_id: creativeId,
-            },
-          };
-        }
-
-        // Wait before retry with exponential backoff
-        await delay(1000 * Math.pow(2, attempt - 1));
-      }
-    }
-
-    // This should never be reached, but just in case
-    return {
-      _emergency_fallback: true,
-      asset_feed_spec: {
-        _fallback_source: "EMERGENCY_FALLBACK",
-        error: "Unexpected code path",
-        creative_id: creativeId,
-      },
-    };
-  }
-
-  // Helper function to determine creative type
-  function determineCreativeType(creative: any, adData: any): string {
-    if (!creative) {
-      // Fallback: check asset_feed_spec or object_story_spec
-      if (adData.asset_feed_spec) {
-        const assetFeed = adData.asset_feed_spec;
-        if (assetFeed.videos && assetFeed.videos.length > 0) return "VIDEO";
-        if (assetFeed.images && assetFeed.images.length > 0) return "IMAGE";
-      }
-
-      if (adData.object_story_spec?.link_data) {
-        const linkData = adData.object_story_spec.link_data;
-        if (linkData.video_id) return "VIDEO";
-        if (linkData.image_hash || linkData.picture) return "IMAGE";
-      }
-
-      return "UNKNOWN";
-    }
-
-    // Check creative object
-    if (creative.video_id) return "VIDEO";
-    if (creative.image_url || creative.thumbnail_url) return "IMAGE";
-
-    // Check object_story_spec
-    if (creative.object_story_spec?.link_data) {
-      const linkData = creative.object_story_spec.link_data;
-      if (linkData.video_id) return "VIDEO";
-      if (linkData.image_hash || linkData.picture) return "IMAGE";
-    }
-
-    // Check asset_feed_spec
-    if (creative.asset_feed_spec) {
-      const assetFeed = creative.asset_feed_spec;
-      if (assetFeed.videos && assetFeed.videos.length > 0) return "VIDEO";
-      if (assetFeed.images && assetFeed.images.length > 0) return "IMAGE";
-    }
-
-    return "UNKNOWN";
-  }
-
-  // Helper function to save ad engagement metrics - ALWAYS creates a record
-  async function saveAdEngagementMetrics(
-    adId: string,
-    insights: any,
-    date: string
-  ) {
-    try {
-      console.log(`📊 Processing engagement metrics for ad ${adId}...`);
-      console.log(`📊 Raw insights data:`, {
-        insights_available: insights ? true : false,
-        impressions: insights?.impressions,
-        clicks: insights?.clicks,
-        spend: insights?.spend,
-        inline_link_clicks: insights?.inline_link_clicks,
-        inline_post_engagement: insights?.inline_post_engagement,
-        actions_count: insights?.actions?.length || 0,
-        video_actions_count:
-          insights?.video_30_sec_watched_actions?.length || 0,
-        cost_per_action_count: insights?.cost_per_action_type?.length || 0,
-      });
-
-      // ALWAYS create a record, even if insights are null
-      const engagementData = {
-        ad_id: adId,
-        date: date,
-        // If no insights, set all metrics to null but still create the record
-        inline_link_clicks: insights
-          ? safeParseInt(insights.inline_link_clicks)
-          : null,
-        inline_post_engagement: insights
-          ? safeParseInt(insights.inline_post_engagement)
-          : null,
-        // Video metrics
-        video_30s_watched: insights?.video_30_sec_watched_actions
-          ? safeParseInt(insights.video_30_sec_watched_actions[0]?.value)
-          : null,
-        video_25_percent_watched: insights?.video_p25_watched_actions
-          ? safeParseInt(insights.video_p25_watched_actions[0]?.value)
-          : null,
-        video_50_percent_watched: insights?.video_p50_watched_actions
-          ? safeParseInt(insights.video_p50_watched_actions[0]?.value)
-          : null,
-        video_75_percent_watched: insights?.video_p75_watched_actions
-          ? safeParseInt(insights.video_p75_watched_actions[0]?.value)
-          : null,
-        video_95_percent_watched: insights?.video_p95_watched_actions
-          ? safeParseInt(insights.video_p95_watched_actions[0]?.value)
-          : null,
-        // Engagement metrics
-        page_engagement: insights?.actions?.find(
-          (a: any) => a.action_type === "page_engagement"
-        )?.value
-          ? safeParseInt(
-              insights.actions.find(
-                (a: any) => a.action_type === "page_engagement"
-              ).value
-            )
-          : null,
-        post_engagement: insights?.actions?.find(
-          (a: any) => a.action_type === "post_engagement"
-        )?.value
-          ? safeParseInt(
-              insights.actions.find(
-                (a: any) => a.action_type === "post_engagement"
-              ).value
-            )
-          : null,
-        post_comments: insights?.actions?.find(
-          (a: any) => a.action_type === "comment"
-        )?.value
-          ? safeParseInt(
-              insights.actions.find((a: any) => a.action_type === "comment")
-                .value
-            )
-          : null,
-        // Video view metrics
-        two_sec_video_views: insights?.video_continuous_2_sec_watched_actions
-          ? safeParseInt(
-              insights.video_continuous_2_sec_watched_actions[0]?.value
-            )
-          : null,
-        three_sec_video_views: insights?.actions?.find(
-          (a: any) => a.action_type === "video_view"
-        )?.value
-          ? safeParseInt(
-              insights.actions.find((a: any) => a.action_type === "video_view")
-                .value
-            )
-          : null,
-        thruplays: insights?.video_thruplay_watched_actions
-          ? safeParseInt(insights.video_thruplay_watched_actions[0]?.value)
-          : null,
-        // Cost metrics from cost_per_action_type
-        cost_per_link_click: insights?.cost_per_action_type?.find(
-          (c: any) => c.action_type === "link_click"
-        )?.value
-          ? safeParseFloat(
-              insights.cost_per_action_type.find(
-                (c: any) => c.action_type === "link_click"
-              ).value
-            )
-          : null,
-        cost_per_post_engagement: insights?.cost_per_action_type?.find(
-          (c: any) => c.action_type === "post_engagement"
-        )?.value
-          ? safeParseFloat(
-              insights.cost_per_action_type.find(
-                (c: any) => c.action_type === "post_engagement"
-              ).value
-            )
-          : null,
-        cost_per_page_engagement: insights?.cost_per_action_type?.find(
-          (c: any) => c.action_type === "page_engagement"
-        )?.value
-          ? safeParseFloat(
-              insights.cost_per_action_type.find(
-                (c: any) => c.action_type === "page_engagement"
-              ).value
-            )
-          : null,
-        cost_per_thruplay: insights?.cost_per_action_type?.find(
-          (c: any) => c.action_type === "video_thruplay_watched"
-        )?.value
-          ? safeParseFloat(
-              insights.cost_per_action_type.find(
-                (c: any) => c.action_type === "video_thruplay_watched"
-              ).value
-            )
-          : null,
-        cost_per_2sec_view: insights?.cost_per_action_type?.find(
-          (c: any) => c.action_type === "video_continuous_2_sec_watched"
-        )?.value
-          ? safeParseFloat(
-              insights.cost_per_action_type.find(
-                (c: any) => c.action_type === "video_continuous_2_sec_watched"
-              ).value
-            )
-          : null,
-        cost_per_3sec_view: insights?.cost_per_action_type?.find(
-          (c: any) => c.action_type === "video_view"
-        )?.value
-          ? safeParseFloat(
-              insights.cost_per_action_type.find(
-                (c: any) => c.action_type === "video_view"
-              ).value
-            )
-          : null,
-        // Calculated metrics
-        avg_watch_time_seconds: insights?.video_avg_time_watched_actions
-          ? safeParseFloat(insights.video_avg_time_watched_actions[0]?.value)
-          : null,
-        // VTR and Hook Rate (calculated)
-        vtr_percentage:
-          insights?.video_p25_watched_actions && insights?.impressions
-            ? (safeParseInt(insights.video_p25_watched_actions[0]?.value) /
-                safeParseInt(insights.impressions)) *
-              100
-            : null,
-        hook_rate_percentage:
-          insights?.video_continuous_2_sec_watched_actions &&
-          insights?.impressions
-            ? (safeParseInt(
-                insights.video_continuous_2_sec_watched_actions[0]?.value
-              ) /
-                safeParseInt(insights.impressions)) *
-              100
-            : null,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-
-      console.log(`📊 Engagement data prepared for ad ${adId}:`, {
-        insights_available: insights ? true : false,
-        inline_link_clicks: engagementData.inline_link_clicks,
-        video_30s_watched: engagementData.video_30s_watched,
-        thruplays: engagementData.thruplays,
-        page_engagement: engagementData.page_engagement,
-        post_engagement: engagementData.post_engagement,
-        vtr_percentage: engagementData.vtr_percentage,
-        hook_rate_percentage: engagementData.hook_rate_percentage,
-      });
-
-      const { error: metricsError } = await supabase
-        .from("ad_engagement_metrics")
-        .upsert([engagementData], {
-          onConflict: "ad_id,date",
-          ignoreDuplicates: false,
-        });
-
-      if (metricsError) {
-        console.error(
-          `❌ Error saving engagement metrics for ad ${adId}:`,
-          metricsError
-        );
-        throw metricsError; // Re-throw so caller can handle
-      } else {
-        console.log(
-          `✅ Saved engagement metrics for ad ${adId} (insights: ${
-            insights ? "available" : "null"
-          })`
-        );
-      }
-    } catch (error) {
-      console.error(
-        `❌ Error processing engagement metrics for ad ${adId}:`,
-        error
-      );
-      throw error; // Re-throw so caller can handle
-    }
-  }
-
   // Process adsets in small batches to get their ads
   const adsetsToProcess = adsetIds.slice(0, RATE_LIMIT_CONFIG.BATCH_SIZE);
 
@@ -3180,10 +2139,8 @@ async function processAdsPhase(
       const ads = await withRateLimitRetry(
         async () => {
           const adset = new AdSet(adsetId);
-          // 🚨 CRITICAL FIX: Try to get ALL ads regardless of status
           return adset.getAds(adFields, {
             limit: 500, // Significantly increased limit from 100 to 500
-            // Try without filtering first to get all ads
           });
         },
         {
@@ -3197,58 +2154,8 @@ async function processAdsPhase(
 
       console.log(`Retrieved ${ads.length} ads for adset ${adsetId}`);
 
-      // 🚨 FALLBACK: If we got very few ads, try alternative approaches
-      let finalAds = ads;
-      if (ads.length < 5) {
-        console.log(
-          `🔄 ADS FALLBACK: Got only ${ads.length} ads for adset ${adsetId}, trying alternatives...`
-        );
-
-        try {
-          console.log(
-            "🔄 ADS FALLBACK: Trying without filtering (increased limit)..."
-          );
-          const fallbackAds = await withRateLimitRetry(
-            async () => {
-              const adset = new AdSet(adsetId);
-              return adset.getAds(adFields, {
-                limit: 500,
-                // 🚨 REMOVED: Facebook API doesn't support 'status' filtering for ads
-                // filtering: [
-                //   {
-                //     field: "status",
-                //     operator: "IN",
-                //     value: ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"],
-                //   },
-                // ],
-              });
-            },
-            {
-              accountId,
-              endpoint: "ads_fallback",
-              callType: "READ",
-              points: RATE_LIMIT_CONFIG.POINTS.READ,
-              supabase,
-            }
-          );
-
-          console.log(
-            `🔄 ADS FALLBACK: Retrieved ${fallbackAds.length} ads without filtering`
-          );
-
-          if (fallbackAds.length > ads.length) {
-            console.log(
-              "✅ ADS FALLBACK: Using unfiltered results (more ads found)"
-            );
-            finalAds = fallbackAds;
-          }
-        } catch (adsFallbackError) {
-          console.warn("🔄 ADS FALLBACK failed:", adsFallbackError);
-        }
-      }
-
       // Process each ad
-      for (const ad of finalAds) {
+      for (const ad of ads) {
         // Check time for each ad
         if (shouldCreateFollowUpJob(startTime)) {
           console.log("Time limit reached during ad processing");
@@ -3258,9 +2165,8 @@ async function processAdsPhase(
         try {
           console.log(`\n--- Processing ad ${ad.id} ---`);
           console.log(`Ad name: ${ad.name}`);
-          console.log(`Ad status: ${ad.status}`);
 
-          // Get insights for this ad - ALWAYS try to fetch insights
+          // Get insights for this ad
           let adInsights = null;
           console.log(`🔍 Getting insights for ad ${ad.id}...`);
 
@@ -3273,12 +2179,7 @@ async function processAdsPhase(
             );
 
             if (adInsights) {
-              console.log(`✅ Ad insights retrieved for ${ad.id}:`, {
-                impressions: adInsights.impressions,
-                clicks: adInsights.clicks,
-                spend: adInsights.spend,
-                actions: adInsights.actions?.length || 0,
-              });
+              console.log(`✅ Ad insights retrieved for ${ad.id}`);
             } else {
               console.log(`⚠️ No insights data for ad ${ad.id}`);
             }
@@ -3287,90 +2188,7 @@ async function processAdsPhase(
               `❌ Error fetching insights for ad ${ad.id}:`,
               insightsError
             );
-            // Continue processing even if insights fail
             adInsights = null;
-          }
-
-          // Extract creative ID and fetch creative details
-          let creativeDetails = null;
-          let creativeId = null;
-          let creativeType = "UNKNOWN";
-          let assetFeedSpec = null;
-
-          if (ad.creative && ad.creative.id) {
-            creativeId = ad.creative.id;
-            console.log(`🎨 Found creative ID: ${creativeId}`);
-
-            // CRITICAL: Fetch creative details with FORCED asset_feed_spec
-            creativeDetails = await fetchCreativeWithRetry(creativeId);
-
-            if (creativeDetails) {
-              console.log(`✅ Creative details fetched for ${creativeId}`);
-              creativeType = determineCreativeType(creativeDetails, ad);
-
-              // CRITICAL: We should ALWAYS have asset_feed_spec if we have creative_id
-              assetFeedSpec = creativeDetails.asset_feed_spec;
-
-              if (!assetFeedSpec) {
-                console.error(
-                  `❌ CRITICAL ERROR: No asset_feed_spec for creative ${creativeId}!`
-                );
-                // This should not happen with our new fetchCreativeWithRetry function
-                assetFeedSpec = {
-                  _fallback_source: "CRITICAL_MISSING_ASSET_FEED_SPEC",
-                  error: "Creative details fetched but no asset_feed_spec",
-                  creative_id: creativeId,
-                  ad_id: ad.id,
-                };
-              }
-            } else {
-              console.error(
-                `❌ CRITICAL ERROR: Could not fetch creative details for ${creativeId}!`
-              );
-              // This should not happen with our new fetchCreativeWithRetry function
-              creativeType = "FETCH_FAILED";
-              assetFeedSpec = {
-                _fallback_source: "CRITICAL_FETCH_FAILURE",
-                error: "fetchCreativeWithRetry returned null",
-                creative_id: creativeId,
-                ad_id: ad.id,
-              };
-            }
-          } else {
-            console.log(`⚠️ No creative ID found for ad ${ad.id}`);
-            creativeType = determineCreativeType(null, ad);
-            // No creative_id means no asset_feed_spec needed
-            assetFeedSpec = null;
-          }
-
-          // CRITICAL VALIDATION: If we have creative_id, we MUST have asset_feed_spec
-          if (creativeId && !assetFeedSpec) {
-            console.error(
-              `❌ VALIDATION FAILED: creative_id ${creativeId} but no asset_feed_spec!`
-            );
-            assetFeedSpec = {
-              _fallback_source: "VALIDATION_FAILURE",
-              error:
-                "Validation failed - creative_id present but no asset_feed_spec",
-              creative_id: creativeId,
-              ad_id: ad.id,
-            };
-          }
-
-          console.log(`🎭 Determined creative type: ${creativeType}`);
-          console.log(
-            `📋 Asset feed spec status: ${assetFeedSpec ? "PRESENT" : "NULL"}`
-          );
-
-          // CRITICAL VALIDATION LOG
-          if (creativeId && assetFeedSpec) {
-            console.log(
-              `✅ VALIDATION PASSED: creative_id ${creativeId} has asset_feed_spec`
-            );
-          } else if (creativeId && !assetFeedSpec) {
-            console.error(
-              `❌ VALIDATION FAILED: creative_id ${creativeId} missing asset_feed_spec`
-            );
           }
 
           // Create comprehensive ad data structure
@@ -3384,13 +2202,10 @@ async function processAdsPhase(
             configured_status: ad.configured_status || null,
             effective_status: ad.effective_status || null,
             creative: ad.creative || null,
-            creative_id: creativeId,
-            creative_type: creativeType,
-            asset_feed_spec: assetFeedSpec,
-            object_story_spec:
-              creativeDetails?.object_story_spec ||
-              ad.creative?.object_story_spec ||
-              null,
+            creative_id: ad.creative?.id || null,
+            creative_type: "UNKNOWN",
+            asset_feed_spec: null,
+            object_story_spec: ad.creative?.object_story_spec || null,
             tracking_specs: ad.tracking_specs || null,
             conversion_specs: ad.conversion_specs || null,
             tracking_and_conversion_specs:
@@ -3400,21 +2215,13 @@ async function processAdsPhase(
             issues_info: ad.issues_info || null,
             engagement_audience: ad.engagement_audience || null,
             preview_url: ad.preview_url || null,
-            template_url:
-              ad.template_url || creativeDetails?.template_url || null,
-            thumbnail_url:
-              ad.thumbnail_url || creativeDetails?.thumbnail_url || null,
-            image_url: creativeDetails?.image_url || null,
-            video_id: creativeDetails?.video_id || null,
-            instagram_permalink_url:
-              ad.instagram_permalink_url ||
-              creativeDetails?.instagram_permalink_url ||
-              null,
-            effective_object_story_id:
-              ad.effective_object_story_id ||
-              creativeDetails?.effective_object_story_id ||
-              null,
-            url_tags: ad.url_tags || creativeDetails?.url_tags || null,
+            template_url: ad.template_url || null,
+            thumbnail_url: ad.thumbnail_url || null,
+            image_url: null,
+            video_id: null,
+            instagram_permalink_url: ad.instagram_permalink_url || null,
+            effective_object_story_id: ad.effective_object_story_id || null,
+            url_tags: ad.url_tags || null,
             // Insights data
             impressions: safeParseInt(adInsights?.impressions),
             clicks: safeParseInt(adInsights?.clicks),
@@ -3440,15 +2247,7 @@ async function processAdsPhase(
             updated_at: new Date().toISOString(),
           };
 
-          console.log(`💾 Attempting to store ad ${ad.id} with data:`, {
-            ad_id: adData.ad_id,
-            ad_set_id: adData.ad_set_id,
-            campaign_id: adData.campaign_id,
-            name: adData.name,
-            status: adData.status,
-            creative_id: adData.creative_id,
-            creative_type: adData.creative_type,
-          });
+          console.log(`💾 Attempting to store ad ${ad.id}`);
 
           const { error: adError } = await supabase
             .from("meta_ads")
@@ -3459,36 +2258,15 @@ async function processAdsPhase(
 
           if (adError) {
             console.error(`❌ Error storing ad ${ad.id}:`, adError);
-            console.error(
-              `Ad data that failed:`,
-              JSON.stringify(adData, null, 2)
-            );
             totalErrors++;
           } else {
             processedAds.push(adData);
             console.log(`✅ Successfully stored ad ${ad.id}`);
           }
 
-          // CRITICAL: ALWAYS save ad engagement metrics for EVERY ad
-          console.log(`📊 Saving engagement metrics for ad ${ad.id}...`);
-          try {
-            const today = new Date().toISOString().split("T")[0];
-            await saveAdEngagementMetrics(ad.id, adInsights, today);
-            console.log(
-              `✅ Successfully saved engagement metrics for ad ${ad.id}`
-            );
-          } catch (engagementError) {
-            console.error(
-              `❌ Error saving engagement metrics for ad ${ad.id}:`,
-              engagementError
-            );
-            // Don't fail the entire ad processing if engagement metrics fail
-          }
-
           await delay(RATE_LIMIT_CONFIG.AD_DELAY);
         } catch (error: any) {
           console.error(`❌ Error processing ad ${ad.id}:`, error);
-          console.error(`❌ Error stack:`, error.stack);
           totalErrors++;
           continue;
         }
@@ -3504,30 +2282,20 @@ async function processAdsPhase(
   console.log(`\n=== ADS PHASE SUMMARY ===`);
   console.log(`Total ads processed: ${processedAds.length}`);
   console.log(`Total errors: ${totalErrors}`);
-  console.log(
-    `Adsets processed: ${adsetsToProcess.length} of ${adsetIds.length}`
-  );
-
-  // 🔍 DEBUGGING: Log ad statuses
-  if (processedAds.length > 0) {
-    const statusCounts = processedAds.reduce((acc: any, ad: any) => {
-      acc[ad.status] = (acc[ad.status] || 0) + 1;
-      return acc;
-    }, {});
-    console.log(`Ad status distribution:`, statusCounts);
-  }
 
   // Determine next action
   const totalProcessed = adsetsToProcess.length;
+  const remainingAdsetIds = adsetIds.slice(RATE_LIMIT_CONFIG.BATCH_SIZE);
 
-  if (totalProcessed < adsetIds.length) {
+  console.log(`\n=== ADS PHASE COMPLETION CHECK ===`);
+  console.log(`Adsets in current batch: ${adsetsToProcess.length}`);
+  console.log(`Total adsets provided: ${adsetIds.length}`);
+  console.log(`Remaining adsets after this batch: ${remainingAdsetIds.length}`);
+
+  // 🛡️ CRITICAL FIX: Check if there are actually remaining adsets to process
+  if (remainingAdsetIds.length > 0) {
     // More adsets to process for ads
     console.log("Creating follow-up job for next batch of adsets (ads)");
-    console.log(`Processed ${totalProcessed} of ${adsetIds.length} adsets`);
-
-    // Pass the remaining adset IDs to the next job
-    const remainingAdsetIds = adsetIds.slice(RATE_LIMIT_CONFIG.BATCH_SIZE);
-    console.log(`Remaining adsets: ${remainingAdsetIds.length}`);
 
     try {
       const followUpResult = await createFollowUpJob({
@@ -3545,6 +2313,15 @@ async function processAdsPhase(
         console.log(
           "✅ Follow-up job created successfully for remaining adsets"
         );
+        return {
+          processedAds: processedAds.length,
+          phase: "ads",
+          after: after,
+          remainingTime: getRemainingTime(startTime),
+          completed: false,
+          hasMoreAdsets: true,
+          remainingAdsets: remainingAdsetIds.length,
+        };
       } else {
         console.log(
           "🛑 Follow-up job creation was prevented by validation - completing job"
@@ -3590,8 +2367,8 @@ async function processAdsPhase(
     }
   } else {
     // All ads processed, mark as completed
-    console.log("All ads processed, marking job as completed");
-    console.log(`Total ads processed: ${processedAds.length}`);
+    console.log("🎉 ALL ADS PROCESSED - NO MORE ADSETS REMAINING");
+    console.log(`Total ads processed in this batch: ${processedAds.length}`);
     await updateJobStatus(supabase, requestId, "completed", 100, undefined, {
       message: "All phases completed successfully",
       totalPhases: 4,
@@ -3599,6 +2376,7 @@ async function processAdsPhase(
       summary: {
         totalProcessed: processedAds.length,
         completedAt: new Date().toISOString(),
+        reason: "All adsets processed successfully",
       },
     });
   }
@@ -3608,7 +2386,9 @@ async function processAdsPhase(
     phase: "ads",
     after: after,
     remainingTime: getRemainingTime(startTime),
-    completed: totalProcessed >= adsetIds.length,
+    completed: remainingAdsetIds.length === 0,
+    hasMoreAdsets: remainingAdsetIds.length > 0,
+    remainingAdsets: remainingAdsetIds.length,
   };
 }
 
