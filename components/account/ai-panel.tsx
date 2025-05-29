@@ -31,17 +31,13 @@ export function AIPanel({
   selectedRange,
   adsData,
 }: AIPanelProps & { onOpenChange: (open: boolean) => void }) {
-  console.log('[RENDER] AIPanel', { isOpen, selectedRange, adsData, onOpenChange });
+  // Console logs removed to fix TypeScript errors
   const [activeAction, setActiveAction] = useState("summarize");
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
-  // Debug logs for props passed to children
-  console.log('[RENDER] SelectionSummary props', { selectedRange, isDetailsOpen });
-  console.log('[RENDER] SummarizeTab props', { selectedRange, adsData });
-
   return (
     <Sheet open={isOpen} onOpenChange={(open) => {
-      console.log('[SHEET] onOpenChange called', { open, prev: isOpen });
+      // Console log removed to fix TypeScript error
       onOpenChange(open);
     }}>
       <SheetContent
@@ -58,7 +54,7 @@ export function AIPanel({
           </div>
 
           <div className="p-4">
-            {console.log('[RENDER] SelectionSummary props', { selectedRange, isDetailsOpen })}
+            {/* Console log removed to fix TypeScript error */}
             <SelectionSummary
               selectedRange={selectedRange}
               isDetailsOpen={isDetailsOpen}
@@ -103,7 +99,7 @@ export function AIPanel({
             <div className="flex-1 overflow-y-auto max-h-[calc(100vh-64px)]">
               <div className="p-4">
                 <TabsContent value="summarize" className="mt-0">
-                  {console.log('[RENDER] SummarizeTab props', { selectedRange, adsData })}
+                  {/* Console log removed to fix TypeScript error */}
                   <SummarizeTab
                     selectedRange={selectedRange}
                     adsData={adsData}
