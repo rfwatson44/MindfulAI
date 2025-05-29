@@ -1,29 +1,17 @@
 [build]
-  command = "CI= npm run build"
-  publish = ".next"
+  command = "npm run build"
+  publish = "out"
 
 [build.environment]
   NODE_VERSION = "18"
   NEXT_TELEMETRY_DISABLED = "1"
-  
-[[plugins]]
-  package = "@netlify/plugin-nextjs"
 
+# Skip processing for static assets
 [build.processing]
   skip_processing = true
 
-# Handle Next.js API routes and server-side rendering
-[functions]
-  included_files = [".env", "*.js", "*.json"]
-  node_bundler = "esbuild"
-
-# Override settings for specific routes
+# Configure redirects for SPA behavior
 [[redirects]]
-  from = "/api/*"
-  to = "/.netlify/functions/api/:splat"
+  from = "/*"
+  to = "/index.html"
   status = 200
-
-# Force production SPA mode (helps with API route failures during build)
-[context.production.environment]
-  NEXT_STATIC_BUILD = "true"
-  NEXT_DISABLE_SERVER_API = "true"
