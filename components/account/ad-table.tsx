@@ -73,6 +73,8 @@ interface AdTablePropsWithAnalyze extends AdTableProps {
   aiPanelOpen?: boolean;
   setAIPanelOpen?: (open: boolean) => void;
   showDebug?: boolean;
+  showAnalyzeButton?: boolean;
+  onAnalyzeSelected?: () => void;
 }
 
 export function AdTable({
@@ -89,12 +91,16 @@ export function AdTable({
   const [showAnalyzeButtonLocal, setShowAnalyzeButtonLocal] = useState(false);
   const [aiPanelOpenLocal, setAIPanelOpenLocal] = useState(false);
   // Effective values: prefer prop, fallback to local
-  const showAnalyzeButtonEffective = typeof showAnalyzeButton === 'boolean' ? showAnalyzeButton : showAnalyzeButtonLocal;
-  const aiPanelOpenEffective = typeof aiPanelOpen === 'boolean' ? aiPanelOpen : aiPanelOpenLocal;
+  const showAnalyzeButtonEffective =
+    typeof showAnalyzeButton === "boolean"
+      ? showAnalyzeButton
+      : showAnalyzeButtonLocal;
+  const aiPanelOpenEffective =
+    typeof aiPanelOpen === "boolean" ? aiPanelOpen : aiPanelOpenLocal;
   const setAIPanelOpenEffective = setAIPanelOpen || setAIPanelOpenLocal;
   // Helper for setting showAnalyzeButton
   const setShowAnalyzeButtonEffective = (show: boolean) => {
-    if (typeof setShowAnalyzeButton === 'function') {
+    if (typeof setShowAnalyzeButton === "function") {
       setShowAnalyzeButton(show);
     } else {
       setShowAnalyzeButtonLocal(show);
@@ -105,13 +111,19 @@ export function AdTable({
   // Render Analyze Selected button above filter bar if showAnalyzeButton is true and aiPanelOpen is false
   const handleAnalyzeClick = () => {
     if (onAnalyzeSelected) {
-      console.log('[DEBUG] [AdTable] Analyze Selected button clicked, calling parent handler');
+      console.log(
+        "[DEBUG] [AdTable] Analyze Selected button clicked, calling parent handler"
+      );
       onAnalyzeSelected();
-    } else if (typeof setAIPanelOpenEffective === 'function') {
-      console.log('[DEBUG] [AdTable] Analyze Selected button clicked, opening local AI panel');
+    } else if (typeof setAIPanelOpenEffective === "function") {
+      console.log(
+        "[DEBUG] [AdTable] Analyze Selected button clicked, opening local AI panel"
+      );
       setAIPanelOpenEffective(true);
     } else {
-      console.log('[DEBUG] [AdTable] Analyze Selected button clicked, but no handler found');
+      console.log(
+        "[DEBUG] [AdTable] Analyze Selected button clicked, but no handler found"
+      );
     }
   };
 
@@ -130,9 +142,14 @@ export function AdTable({
       filteredDataState.every((ad, i) => ad === safeData[i]);
     if (!isSame) {
       setFilteredDataState(safeData);
-      console.log('[AdTable] useEffect: data changed, resetting filteredDataState. data.length:', safeData.length);
+      console.log(
+        "[AdTable] useEffect: data changed, resetting filteredDataState. data.length:",
+        safeData.length
+      );
     } else {
-      console.log('[AdTable] useEffect: data unchanged, skipping setFilteredDataState.');
+      console.log(
+        "[AdTable] useEffect: data unchanged, skipping setFilteredDataState."
+      );
     }
   }, [safeData, filteredDataState]);
 
@@ -541,7 +558,6 @@ export function AdTable({
 
   return (
     <div className="flex flex-col h-full min-h-0 flex-1">
-
       {/* AI Panel is now only rendered at the page level. Removed from AdTable for single source of truth. */}
       <div className="border-b p-4 sticky top-0 z-30 bg-white">
         <AdTableFilters
@@ -551,7 +567,11 @@ export function AdTable({
           onMetricToggle={handleMetricToggle}
         />
       </div>
-      <div className="flex-1 min-h-0 overflow-auto w-full" ref={tableContainerRef} onScroll={handleScroll}>
+      <div
+        className="flex-1 min-h-0 overflow-auto w-full"
+        ref={tableContainerRef}
+        onScroll={handleScroll}
+      >
         <Table>
           <AdTableHeader
             activeMetrics={activeMetrics}
