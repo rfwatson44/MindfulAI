@@ -23,6 +23,12 @@ import { AIPanel } from "./ai-panel";
 interface AdTableProps {
   data: Ad[];
   onSelectionChange: (selection: SelectedRange | null) => void;
+  showAnalyzeButton?: boolean;
+  setShowAnalyzeButton?: (show: boolean) => void;
+  aiPanelOpen?: boolean;
+  setAIPanelOpen?: (open: boolean) => void;
+  onAnalyzeSelected?: () => void;
+  showDebug?: boolean;
 }
 
 export function AdImageCell({
