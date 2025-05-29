@@ -1,19 +1,29 @@
 [build]
-  command = "npm run build"
+  command = "CI= npm run build"
   publish = ".next"
 
 [build.environment]
   NODE_VERSION = "18"
   NEXT_TELEMETRY_DISABLED = "1"
-
+  
 [[plugins]]
   package = "@netlify/plugin-nextjs"
 
-# Prevent Next.js from attempting to build API routes that might require 
-# server-side dependencies during build time
 [build.processing]
   skip_processing = true
 
+# Handle Next.js API routes and server-side rendering
 [functions]
-  external_node_modules = ["@vercel/postgres"]
-  included_files = [".env"]
+  included_files = [".env", "*.js", "*.json"]
+  node_bundler = "esbuild"
+
+# Override settings for specific routes
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+# Force production SPA mode (helps with API route failures during build)
+[context.production.environment]
+  NEXT_STATIC_BUILD = "true"
+  NEXT_DISABLE_SERVER_API = "true"
