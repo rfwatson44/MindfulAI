@@ -151,7 +151,7 @@ export function AdTable({
         "[AdTable] useEffect: data unchanged, skipping setFilteredDataState."
       );
     }
-  }, [safeData, filteredDataState]);
+  }, [safeData]);
 
   const [selectedCells, setSelectedCells] = useState<
     Array<{ row: number; col: number }>
@@ -367,15 +367,15 @@ export function AdTable({
     }
   };
 
-  useEffect(() => {
-    // No-op
-  }, [
-    selectedCells.length,
-    showAnalyzeButton,
-    showAnalyzeButtonLocal,
-    aiPanelOpen,
-    aiPanelOpenLocal,
-  ]);
+  // useEffect(() => {
+  //   // No-op
+  // }, [
+  //   selectedCells.length,
+  //   showAnalyzeButton,
+  //   showAnalyzeButtonLocal,
+  //   aiPanelOpen,
+  //   aiPanelOpenLocal,
+  // ]);
 
   // Extract unique rows and columns from selected cells
   const uniqueCols = useMemo(() => {
@@ -520,7 +520,6 @@ export function AdTable({
     uniqueRows,
     allMetrics,
     filteredData,
-    setShowAnalyzeButton,
     onSelectionChange,
   ]);
 

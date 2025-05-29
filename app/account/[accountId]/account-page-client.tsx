@@ -57,13 +57,12 @@ interface AccountPageClientProps {
   pagination: PaginationInfo;
 }
 
-
 export function AccountPageClient({
   account,
   initialAdsData,
   pagination,
 }: AccountPageClientProps) {
-  console.log('[RENDER] AccountPageClient', { initialAdsData, pagination });
+  console.log("[RENDER] AccountPageClient", { initialAdsData, pagination });
   const router = useRouter();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
@@ -83,14 +82,30 @@ export function AccountPageClient({
       ? initialAdsData
       : [];
 
-  const [selectedRange, setSelectedRange] = useState<SelectedRange | null>(null);
+  const [selectedRange, setSelectedRange] = useState<SelectedRange | null>(
+    null
+  );
   const [showAnalyzeButton, setShowAnalyzeButton] = useState(false);
   const [isAIPanelOpen, setIsAIPanelOpen] = useState(false);
-  console.log(`[DEBUG] [STATE] isAIPanelOpen:`, isAIPanelOpen, '[STATE] showAnalyzeButton:', showAnalyzeButton, '[STATE] selectedRange:', selectedRange);
+  console.log(
+    `[DEBUG] [STATE] isAIPanelOpen:`,
+    isAIPanelOpen,
+    "[STATE] showAnalyzeButton:",
+    showAnalyzeButton,
+    "[STATE] selectedRange:",
+    selectedRange
+  );
 
   // Deep debug: log state on every render
   useEffect(() => {
-    console.log('[EFFECT][RENDER] isAIPanelOpen:', isAIPanelOpen, 'showAnalyzeButton:', showAnalyzeButton, 'selectedRange:', selectedRange);
+    console.log(
+      "[EFFECT][RENDER] isAIPanelOpen:",
+      isAIPanelOpen,
+      "showAnalyzeButton:",
+      showAnalyzeButton,
+      "selectedRange:",
+      selectedRange
+    );
   });
 
   // Real Supabase fetchAdsData implementation
@@ -108,7 +123,10 @@ export function AccountPageClient({
       .select("*", { count: "exact" })
       .eq("account_id", formattedAccountId); // Filter by account_id
     if (adType === "static" || adType === "video") {
-      query = query.eq("creative_type", adType === "static" ? "IMAGE" : "VIDEO");
+      query = query.eq(
+        "creative_type",
+        adType === "static" ? "IMAGE" : "VIDEO"
+      );
     }
     query = query.range(from, to);
     console.log("[fetchAdsData] formattedAccountId:", formattedAccountId);
@@ -170,12 +188,29 @@ export function AccountPageClient({
 
   // Invalidate query cache when SSR data changes (correct API)
   useEffect(() => {
-    queryClient.invalidateQueries({ queryKey: ["ads", account.id, pagination.currentPage, activeTab, initialAdsData] });
-  }, [initialAdsData, pagination.currentPage, activeTab, account.id, queryClient]);
+    queryClient.invalidateQueries({
+      queryKey: [
+        "ads",
+        account.id,
+        pagination.currentPage,
+        activeTab,
+        initialAdsData,
+      ],
+    });
+  }, [
+    initialAdsData,
+    pagination.currentPage,
+    activeTab,
+    account.id,
+    queryClient,
+  ]);
 
   // Compute adsData, totalPages, paginatedAds for rendering
   const adsData = useMemo(() => adsQueryData?.data || [], [adsQueryData]);
-  const totalPages = Math.max(1, Math.ceil((adsQueryData?.count || 0) / pagination.pageSize));
+  const totalPages = Math.max(
+    1,
+    Math.ceil((adsQueryData?.count || 0) / pagination.pageSize)
+  );
   const paginatedAds = useMemo(() => adsData, [adsData]);
 
   // Log the query results for debugging
@@ -234,7 +269,7 @@ export function AccountPageClient({
   // Handle tab change
   const handleTabChange = useCallback(
     (type: AdType) => {
-      console.log('[CALLBACK] handleTabChange', { type });
+      console.log("[CALLBACK] handleTabChange", { type });
       if (type === activeTab) return;
       setActiveTab(type);
       setCurrentPage(1);
@@ -248,23 +283,51 @@ export function AccountPageClient({
   );
 
   // Handle selection change
-  const handleSelectionChange = (selection: SelectedRange | null) => {
-    console.log('[CALLBACK] handleSelectionChange BEFORE', { selection, prevSelectedRange: selectedRange });
-    setSelectedRange(selection);
-    console.log('[CALLBACK] handleSelectionChange AFTER', { selection, prevSelectedRange: selectedRange });
-  };
+  const handleSelectionChange = useCallback(
+    (selection: SelectedRange | null) => {
+      console.log("[CALLBACK] handleSelectionChange", { selection });
+      setSelectedRange(selection);
+    },
+    [] // Removed selectedRange from dependencies to prevent infinite loops
+  );
 
   // Handle Analyze Selected click
-  const handleAnalyzeClick = () => {
-    console.log('[CLICK] Analyze Selected');
+  const handleAnalyzeClick = useCallback(() => {
+    console.log("[CLICK] Analyze Selected");
     setIsAIPanelOpen(true);
-  };
+  }, []);
 
+  // Memoized callback for setShowAnalyzeButton
+  const handleSetShowAnalyzeButton = useCallback(
+    (show: boolean) => {
+      console.log("[PROP] setShowAnalyzeButton called", { show });
+      setShowAnalyzeButton(show);
+    },
+    [] // Removed showAnalyzeButton from dependencies to prevent infinite loops
+  );
 
-  // Toggle AI panel
-  const toggleAIPanel = () => {
-    setIsAIPanelOpen(!isAIPanelOpen);
-  };
+  // Memoized callback for setAIPanelOpen
+  const handleSetAIPanelOpen = useCallback(
+    (open: boolean) => {
+      console.log("[PROP] setAIPanelOpen called", { open });
+      setIsAIPanelOpen(open);
+    },
+    [] // Removed isAIPanelOpen from dependencies to prevent infinite loops
+  );
+
+  // Memoized callback for AIPanel onOpenChange
+  const handleAIPanelOpenChange = useCallback(
+    (open: boolean) => {
+      console.log("[PROP] AIPanel onOpenChange called", { open });
+      setIsAIPanelOpen(open);
+      if (!open) {
+        setShowAnalyzeButton(false);
+        // setSelectedRange(null);
+        console.log("[PROP] AIPanel closed, setShowAnalyzeButton(false)");
+      }
+    },
+    [] // Removed isAIPanelOpen from dependencies to prevent infinite loops
+  );
 
   // Use client-side navigation to fetch data when parameters change
   useEffect(() => {
@@ -385,15 +448,9 @@ export function AccountPageClient({
           <AdTable
             data={paginatedAds}
             onSelectionChange={handleSelectionChange}
-            setShowAnalyzeButton={(show) => {
-              console.log('[PROP] setShowAnalyzeButton called', { show, prev: showAnalyzeButton });
-              setShowAnalyzeButton(show);
-            }}
+            setShowAnalyzeButton={handleSetShowAnalyzeButton}
             aiPanelOpen={isAIPanelOpen}
-            setAIPanelOpen={(open) => {
-              console.log('[PROP] setAIPanelOpen called', { open, prev: isAIPanelOpen });
-              setIsAIPanelOpen(open);
-            }}
+            setAIPanelOpen={handleSetAIPanelOpen}
           />
           {totalPages > 1 && (
             <div className="flex justify-center my-4">
@@ -401,7 +458,9 @@ export function AccountPageClient({
                 currentPage={currentPage}
                 totalPages={totalPages}
                 onPageChange={(page) => {
-                  const params = new URLSearchParams(Array.from(searchParams.entries()));
+                  const params = new URLSearchParams(
+                    Array.from(searchParams.entries())
+                  );
                   params.set("page", String(page));
                   router.push(`?${params.toString()}`);
                 }}
@@ -422,19 +481,11 @@ export function AccountPageClient({
         </div>
 
         <AIPanel
-           isOpen={isAIPanelOpen}
-           onOpenChange={(open) => {
-             console.log('[PROP] AIPanel onOpenChange called', { open, prev: isAIPanelOpen });
-             setIsAIPanelOpen(open);
-             if (!open) {
-               setShowAnalyzeButton(false);
-               // setSelectedRange(null);
-               console.log('[PROP] AIPanel closed, setShowAnalyzeButton(false)');
-             }
-           }}
-           selectedRange={selectedRange}
-           adsData={adsData}
-         />
+          isOpen={isAIPanelOpen}
+          onOpenChange={handleAIPanelOpenChange}
+          selectedRange={selectedRange}
+          adsData={adsData}
+        />
       </div>
     </div>
   );
