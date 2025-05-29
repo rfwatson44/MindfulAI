@@ -139,7 +139,15 @@ export default function SummarizeTab({
   selectedRange: SelectedRange | null;
   adsData: Ad[];
 }) {
+  console.log("[SummarizeTab] Render", {
+    selectedRange,
+    adsData: adsData?.length,
+    hasSelection: !!selectedRange,
+    selectionType: selectedRange?.type,
+  });
+
   if (!selectedRange) {
+    console.log("[SummarizeTab] No selected range");
     return (
       <div className="flex h-full flex-col items-center justify-center text-center text-muted-foreground">
         <span className="mb-2 text-2xl">🤖</span>
@@ -151,6 +159,18 @@ export default function SummarizeTab({
   const showColumnSummary = selectedRange.type === "column";
   const showRowSummary = selectedRange.type === "row";
   const showCellSummary = selectedRange.type === "cell";
+
+  console.log("[SummarizeTab] Selection types:", {
+    showColumnSummary,
+    showRowSummary,
+    showCellSummary,
+    valuesCount:
+      selectedRange.type === "column" || selectedRange.type === "row"
+        ? selectedRange.values?.length
+        : selectedRange.type === "cell"
+        ? (selectedRange.additionalSelections?.length || 0) + 1
+        : 0,
+  });
 
   return (
     <div className="p-4 space-y-6">

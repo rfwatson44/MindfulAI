@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   X,
   Sparkles,
@@ -40,6 +40,15 @@ export function AIPanel({
   const [activeAction, setActiveAction] = useState("summarize");
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
+  // Ensure UI is reset when panel opens or closes
+  useEffect(() => {
+    // When panel opens, reset to summarize tab
+    console.log("[AIPanel] isOpen changed:", isOpen);
+    if (isOpen) {
+      setActiveAction("summarize");
+    }
+  }, [isOpen]);
+
   // Debug logs for props passed to children
   console.log("[RENDER] SelectionSummary props", {
     selectedRange,
@@ -52,7 +61,9 @@ export function AIPanel({
       open={isOpen}
       onOpenChange={(open) => {
         console.log("[SHEET] onOpenChange called", { open, prev: isOpen });
+        // Force isOpen to be the current value to ensure the panel actually opens/closes
         onOpenChange(open);
+        console.log("[SHEET] onOpenChange finished", { newOpen: open });
       }}
     >
       <SheetContent

@@ -7,8 +7,14 @@ import { getColumnDistribution } from "./SummarizeTab";
 function getSelectionSummary(selectedRange: SelectedRange): string {
   switch (selectedRange.type) {
     case "cell": {
-      const totalSelections = 1 + (typeof (selectedRange as any).additionalSelections !== 'undefined' ? (selectedRange as any).additionalSelections.length : 0);
-      return `${totalSelections} cell${totalSelections > 1 ? "s" : ""} selected`;
+      const totalSelections =
+        1 +
+        (typeof (selectedRange as any).additionalSelections !== "undefined"
+          ? (selectedRange as any).additionalSelections.length
+          : 0);
+      return `${totalSelections} cell${
+        totalSelections > 1 ? "s" : ""
+      } selected`;
     }
     case "row": {
       const rowCount = selectedRange.adName.split(", ").length;
@@ -34,10 +40,17 @@ export default function SelectionSummary({
   onToggleDetails: () => void;
   onAnalyze?: () => void;
 }) {
+  console.log("[SelectionSummary] render", {
+    hasSelection: !!selectedRange,
+    selectionType: selectedRange?.type,
+    isDetailsOpen,
+  });
+
   if (!selectedRange) {
     return (
       <div className="rounded-lg border border-dashed p-4 text-center text-muted-foreground">
-        No data selected. Click on cells, rows, or columns in the table to analyze.
+        No data selected. Click on cells, rows, or columns in the table to
+        analyze.
       </div>
     );
   }
@@ -45,16 +58,18 @@ export default function SelectionSummary({
   return (
     <div className="rounded-lg border bg-muted/30 p-4">
       <div className="flex items-center justify-between mb-2">
-        <div className="font-medium">
-          {getSelectionSummary(selectedRange)}
-        </div>
+        <div className="font-medium">{getSelectionSummary(selectedRange)}</div>
         <Button
           variant="ghost"
           size="icon"
           onClick={onToggleDetails}
           aria-label={isDetailsOpen ? "Hide details" : "Show details"}
         >
-          {isDetailsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          {isDetailsOpen ? (
+            <ChevronUp className="h-4 w-4" />
+          ) : (
+            <ChevronDown className="h-4 w-4" />
+          )}
         </Button>
       </div>
       {isDetailsOpen && (
@@ -62,26 +77,35 @@ export default function SelectionSummary({
           {selectedRange.type === "cell" && (
             <>
               <div>
-                <b>{(selectedRange as any).metricName}:</b> {(selectedRange as any).value}
+                <b>{(selectedRange as any).metricName}:</b>{" "}
+                {(selectedRange as any).value}
               </div>
             </>
           )}
           {selectedRange.type === "row" && (
             <>
-              <div><b>Row metrics:</b></div>
+              <div>
+                <b>Row metrics:</b>
+              </div>
               <ul className="ml-4 list-disc">
                 {(selectedRange as any).values?.map((v: any, i: number) => (
-                  <li key={i}>{v.metricName}: {v.value}</li>
+                  <li key={i}>
+                    {v.metricName}: {v.value}
+                  </li>
                 ))}
               </ul>
             </>
           )}
           {selectedRange.type === "column" && (
             <>
-              <div><b>Column metrics:</b></div>
+              <div>
+                <b>Column metrics:</b>
+              </div>
               <ul className="ml-4 list-disc">
                 {(selectedRange as any).values?.map((v: any, i: number) => (
-                  <li key={i}>{v.adName}: {v.value}</li>
+                  <li key={i}>
+                    {v.adName}: {v.value}
+                  </li>
                 ))}
               </ul>
               <div className="text-xs mt-2">

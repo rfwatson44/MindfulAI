@@ -294,7 +294,10 @@ export function AccountPageClient({
   // Handle Analyze Selected click
   const handleAnalyzeClick = useCallback(() => {
     console.log("[CLICK] Analyze Selected");
+    console.log("Current isAIPanelOpen before:", isAIPanelOpen);
+    console.log("Current selectedRange:", selectedRange);
     setIsAIPanelOpen(true);
+    console.log("Set isAIPanelOpen to true");
   }, []);
 
   // Memoized callback for setShowAnalyzeButton
@@ -309,8 +312,15 @@ export function AccountPageClient({
   // Memoized callback for setAIPanelOpen
   const handleSetAIPanelOpen = useCallback(
     (open: boolean) => {
-      console.log("[PROP] setAIPanelOpen called", { open });
-      setIsAIPanelOpen(open);
+      console.log("[PROP] setAIPanelOpen called", {
+        open,
+        current: isAIPanelOpen,
+      });
+      // Force a slight delay to ensure React has time to process state updates
+      if (open !== isAIPanelOpen) {
+        setIsAIPanelOpen(open);
+        console.log("[PROP] setAIPanelOpen updated state to", open);
+      }
     },
     [] // Removed isAIPanelOpen from dependencies to prevent infinite loops
   );
@@ -318,8 +328,20 @@ export function AccountPageClient({
   // Memoized callback for AIPanel onOpenChange
   const handleAIPanelOpenChange = useCallback(
     (open: boolean) => {
-      console.log("[PROP] AIPanel onOpenChange called", { open });
+      console.log("[PROP] AIPanel onOpenChange called", {
+        open,
+        current: isAIPanelOpen,
+      });
+
+      // Don't update if the state is already what we want
+      if (open === isAIPanelOpen) {
+        console.log("[PROP] AIPanel no change needed - already", open);
+        return;
+      }
+
       setIsAIPanelOpen(open);
+      console.log("[PROP] AIPanel state updated to", open);
+
       if (!open) {
         setShowAnalyzeButton(false);
         // setSelectedRange(null);
