@@ -21,10 +21,19 @@ const RATE_LIMIT = {
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Helper to validate cron secret
-const validateCronSecret = () => {
+const validateCronSecret = (request: Request) => {
   const headersList = headers();
   const cronSecret = headersList.get("x-cron-secret");
-  return cronSecret === process.env.CRON_SECRET;
+
+  // Check URL for secret parameter
+  const url = new URL(request.url);
+  const querySecret = url.searchParams.get("secret");
+
+  // Valid if either header or query param matches
+  return (
+    cronSecret === process.env.CRON_SECRET ||
+    querySecret === process.env.CRON_SECRET
+  );
 };
 
 // Process accounts in batches using the new Meta Marketing Worker
@@ -135,12 +144,12 @@ async function processBatch(accounts: any[], supabase: any) {
   return results;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const startTime = Date.now();
 
   try {
     // Validate cron secret
-    if (!validateCronSecret()) {
+    if (!validateCronSecret(request)) {
       console.error("❌ Unauthorized cron request - invalid secret");
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
