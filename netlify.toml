@@ -1,0 +1,19 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "18"
+  NEXT_TELEMETRY_DISABLED = "1"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Prevent Next.js from attempting to build API routes that might require 
+# server-side dependencies during build time
+[build.processing]
+  skip_processing = true
+
+[functions]
+  external_node_modules = ["@vercel/postgres"]
+  included_files = [".env"]
