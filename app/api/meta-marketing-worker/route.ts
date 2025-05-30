@@ -5,6 +5,7 @@ import {
   AdAccount,
   Campaign,
   AdSet,
+  Ad,
 } from "facebook-nodejs-business-sdk";
 import { createClient } from "@/utils/supabase/server";
 import { MetaMarketingJobPayload } from "@/app/actions/meta-marketing-queue";
@@ -419,7 +420,7 @@ interface InsightResult {
   [key: string]: unknown;
 }
 
-// Date range helpers
+// Date range helpers with improved logic for zero data issues
 function getLast24HoursDateRange() {
   const endDate = new Date();
   const startDate = new Date(endDate);
@@ -459,10 +460,54 @@ function getLast6MonthsDateRange() {
   return result;
 }
 
+// NEW: Get date range for last 7 days (better for recent data)
+function getLast7DaysDateRange() {
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - 7);
+  return {
+    since: startDate.toISOString().split("T")[0],
+    until: endDate.toISOString().split("T")[0],
+  };
+}
+
+// NEW: Get date range for last 30 days (good middle ground)
+function getLast30DaysDateRange() {
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - 30);
+  return {
+    since: startDate.toISOString().split("T")[0],
+    until: endDate.toISOString().split("T")[0],
+  };
+}
+
+// NEW: Get date range accounting for Meta's 72-hour data delay
+function getDateRangeWithDelay() {
+  const endDate = new Date();
+  endDate.setDate(endDate.getDate() - 3); // Account for 72-hour delay
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - 33); // 30 days + 3 day delay
+  return {
+    since: startDate.toISOString().split("T")[0],
+    until: endDate.toISOString().split("T")[0],
+  };
+}
+
 function getDateRangeForTimeframe(timeframe: string) {
-  return timeframe === "24h"
-    ? getLast24HoursDateRange()
-    : getLast6MonthsDateRange();
+  switch (timeframe) {
+    case "24h":
+      return getLast24HoursDateRange();
+    case "7d":
+      return getLast7DaysDateRange();
+    case "30d":
+      return getLast30DaysDateRange();
+    case "30d-delayed":
+      return getDateRangeWithDelay();
+    case "6-month":
+    default:
+      return getLast6MonthsDateRange();
+  }
 }
 
 // Rate limiting and retry logic (simplified version)
@@ -538,7 +583,7 @@ async function withRateLimitRetry<T>(
   }
 }
 
-// Get insights helper with improved error handling and fallback strategies
+// Get insights helper with improved error handling and fallback strategies for zero data issues
 async function getInsights(
   entity: InsightCapableEntity,
   supabase: any,
@@ -555,7 +600,7 @@ async function getInsights(
       console.log(`📅 Date range: ${dateRange.since} to ${dateRange.until}`);
 
       try {
-        // First attempt: Try with the requested timeframe
+        // STRATEGY 1: Try with the requested timeframe and full metrics
         const insights = await entity.getInsights(
           [
             "impressions",
@@ -598,7 +643,8 @@ async function getInsights(
 
         const result = (insights?.[0] as InsightResult) || null;
 
-        if (result) {
+        // Validate if we got meaningful data
+        if (result && hasValidInsightsData(result)) {
           console.log(`✅ Insights fetched successfully for ${entity.id}:`, {
             impressions: result.impressions,
             clicks: result.clicks,
@@ -606,90 +652,98 @@ async function getInsights(
             actions_count: result.actions?.length || 0,
           });
           return result;
-        } else {
+        } else if (result) {
           console.log(
-            `⚠️ No insights data for primary timeframe, trying fallback...`
-          );
-
-          // FALLBACK 1: Try with last 30 days if 6-month failed
-          if (timeframe === "6-month") {
-            console.log(`🔄 Trying 30-day fallback for ${entity.id}...`);
-            const fallbackRange = {
-              since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-                .toISOString()
-                .split("T")[0],
-              until: new Date().toISOString().split("T")[0],
-            };
-
-            const fallbackInsights = await entity.getInsights(
-              [
-                "impressions",
-                "clicks",
-                "reach",
-                "spend",
-                "actions",
-                "cost_per_action_type",
-                "inline_link_clicks",
-                "inline_post_engagement",
-                "video_30_sec_watched_actions",
-                "video_p25_watched_actions",
-                "video_thruplay_watched_actions",
-                "video_continuous_2_sec_watched_actions",
-              ],
-              {
-                time_range: fallbackRange,
-                breakdowns: [],
-              }
-            );
-
-            const fallbackResult =
-              (fallbackInsights?.[0] as InsightResult) || null;
-            if (fallbackResult) {
-              console.log(
-                `✅ Fallback insights (30-day) fetched for ${entity.id}`
-              );
-              return fallbackResult;
+            `⚠️ Got insights but with zero/null values for ${entity.id}:`,
+            {
+              impressions: result.impressions,
+              clicks: result.clicks,
+              spend: result.spend,
             }
-          }
+          );
+        }
 
-          // FALLBACK 2: Try with last 7 days
-          console.log(`🔄 Trying 7-day fallback for ${entity.id}...`);
-          const weekRange = {
-            since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-              .toISOString()
-              .split("T")[0],
-            until: new Date().toISOString().split("T")[0],
-          };
+        // STRATEGY 2: Try with 30-day delayed range (accounting for Meta's 72-hour delay)
+        if (timeframe === "6-month") {
+          console.log(`🔄 Trying delayed range for ${entity.id}...`);
+          const delayedRange = getDateRangeWithDelay();
 
-          const weekInsights = await entity.getInsights(
+          const delayedInsights = await entity.getInsights(
             [
               "impressions",
               "clicks",
               "reach",
               "spend",
               "actions",
+              "cost_per_action_type",
               "inline_link_clicks",
               "inline_post_engagement",
             ],
             {
-              time_range: weekRange,
+              time_range: delayedRange,
               breakdowns: [],
             }
           );
 
-          const weekResult = (weekInsights?.[0] as InsightResult) || null;
-          if (weekResult) {
-            console.log(
-              `✅ Fallback insights (7-day) fetched for ${entity.id}`
-            );
-            return weekResult;
+          const delayedResult = (delayedInsights?.[0] as InsightResult) || null;
+          if (delayedResult && hasValidInsightsData(delayedResult)) {
+            console.log(`✅ Delayed insights fetched for ${entity.id}`);
+            return delayedResult;
           }
-
-          console.log(
-            `⚠️ No insights data available for ${entity.id} in any timeframe`
-          );
-          return null;
         }
+
+        // STRATEGY 3: Try with last 7 days (most recent reliable data)
+        console.log(`🔄 Trying 7-day fallback for ${entity.id}...`);
+        const weekRange = getLast7DaysDateRange();
+
+        const weekInsights = await entity.getInsights(
+          [
+            "impressions",
+            "clicks",
+            "reach",
+            "spend",
+            "actions",
+            "inline_link_clicks",
+            "inline_post_engagement",
+          ],
+          {
+            time_range: weekRange,
+            breakdowns: [],
+          }
+        );
+
+        const weekResult = (weekInsights?.[0] as InsightResult) || null;
+        if (weekResult && hasValidInsightsData(weekResult)) {
+          console.log(`✅ Fallback insights (7-day) fetched for ${entity.id}`);
+          return weekResult;
+        }
+
+        // STRATEGY 4: Try with minimal metrics and shorter range
+        console.log(`🔄 Trying minimal metrics for ${entity.id}...`);
+        const minimalRange = {
+          since: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .split("T")[0],
+          until: new Date().toISOString().split("T")[0],
+        };
+
+        const minimalInsights = await entity.getInsights(
+          ["impressions", "clicks", "spend"],
+          {
+            time_range: minimalRange,
+          }
+        );
+
+        const minimalResult = (minimalInsights?.[0] as InsightResult) || null;
+        if (minimalResult) {
+          console.log(`✅ Minimal insights fetched for ${entity.id}`);
+          return minimalResult;
+        }
+
+        console.log(
+          `⚠️ No insights data available for ${entity.id} in any timeframe`
+        );
+        return null;
       } catch (insightsError: any) {
         console.error(
           `❌ Error fetching insights for ${entity.id}:`,
@@ -699,7 +753,12 @@ async function getInsights(
         // If it's a permissions or data availability error, try a simpler request
         if (
           insightsError?.response?.error?.code === 100 ||
-          insightsError?.response?.error?.message?.includes("No data available")
+          insightsError?.response?.error?.message?.includes(
+            "No data available"
+          ) ||
+          insightsError?.response?.error?.message?.includes(
+            "Unsupported get request"
+          )
         ) {
           console.log(
             `🔄 Trying simplified insights request for ${entity.id}...`
@@ -742,6 +801,19 @@ async function getInsights(
       supabase,
     }
   );
+}
+
+// NEW: Helper function to validate if insights data is meaningful
+function hasValidInsightsData(insights: InsightResult): boolean {
+  if (!insights) return false;
+
+  // Check if we have any meaningful metrics (not all zeros/nulls)
+  const impressions = parseInt(insights.impressions || "0");
+  const clicks = parseInt(insights.clicks || "0");
+  const spend = parseFloat(insights.spend || "0");
+
+  // Consider data valid if we have impressions OR spend OR clicks
+  return impressions > 0 || spend > 0 || clicks > 0;
 }
 
 // Main background job handler with chunked processing
@@ -2880,5 +2952,223 @@ async function saveAdEngagementMetrics(
   }
 }
 
+// NEW: Function to specifically handle and fix zero spend/impressions issues
+async function fixZeroSpendImpressions(
+  accountId: string,
+  supabase: any,
+  requestId: string
+): Promise<{ fixed: number; total: number; errors: string[] }> {
+  console.log(
+    `🔧 Starting zero spend/impressions fix for account ${accountId}`
+  );
+
+  const errors: string[] = [];
+  let fixedCount = 0;
+  let totalCount = 0;
+
+  try {
+    // Find ads with zero spend and zero impressions
+    const { data: zeroAds, error: queryError } = await supabase
+      .from("meta_ads")
+      .select("ad_id, name, account_id")
+      .eq("account_id", accountId)
+      .eq("spend", 0)
+      .eq("impressions", 0)
+      .limit(50); // Process in batches
+
+    if (queryError) {
+      throw new Error(`Failed to query zero ads: ${queryError.message}`);
+    }
+
+    if (!zeroAds || zeroAds.length === 0) {
+      console.log(
+        `✅ No ads with zero spend/impressions found for account ${accountId}`
+      );
+      return { fixed: 0, total: 0, errors: [] };
+    }
+
+    totalCount = zeroAds.length;
+    console.log(`🔍 Found ${totalCount} ads with zero spend/impressions`);
+
+    // Initialize Facebook API
+    const api = new FacebookAdsApi(process.env.FACEBOOK_ACCESS_TOKEN!);
+    FacebookAdsApi.init(process.env.FACEBOOK_ACCESS_TOKEN!);
+
+    for (const adRecord of zeroAds) {
+      try {
+        console.log(`🔧 Fixing ad ${adRecord.ad_id} (${adRecord.name})`);
+
+        const ad = new Ad(adRecord.ad_id);
+
+        // Try multiple strategies to get valid data
+        let validInsights: InsightResult | null = null;
+
+        // Strategy 1: 7-day range (most recent reliable data)
+        try {
+          validInsights = await getInsights(
+            ad as any,
+            supabase,
+            accountId,
+            "7d"
+          );
+        } catch (error) {
+          console.log(`⚠️ 7-day range failed for ${adRecord.ad_id}`);
+        }
+
+        // Strategy 2: Lifetime data with minimal metrics
+        if (!validInsights || !hasValidInsightsData(validInsights)) {
+          try {
+            const lifetimeInsights = await withRateLimitRetry(
+              async () => {
+                return ad.getInsights(["impressions", "clicks", "spend"], {
+                  date_preset: "lifetime",
+                });
+              },
+              {
+                accountId,
+                endpoint: "insights",
+                callType: "READ",
+                points: RATE_LIMIT_CONFIG.POINTS.INSIGHTS,
+                supabase,
+              }
+            );
+            validInsights = (lifetimeInsights?.[0] as InsightResult) || null;
+          } catch (error) {
+            console.log(`⚠️ Lifetime insights failed for ${adRecord.ad_id}`);
+          }
+        }
+
+        if (validInsights && hasValidInsightsData(validInsights)) {
+          // Update the ad record with valid data
+          const { error: updateError } = await supabase
+            .from("meta_ads")
+            .update({
+              impressions: safeParseInt(validInsights.impressions),
+              clicks: safeParseInt(validInsights.clicks),
+              spend: safeParseFloat(validInsights.spend),
+              reach: safeParseInt(validInsights.reach),
+              cpc: safeParseFloat(validInsights.cpc),
+              cpm: safeParseFloat(validInsights.cpm),
+              ctr: safeParseFloat(validInsights.ctr),
+              frequency: safeParseFloat(validInsights.frequency),
+              actions: validInsights.actions || [],
+              action_values: validInsights.action_values || [],
+              cost_per_action_type: validInsights.cost_per_action_type || [],
+              updated_at: new Date(),
+              last_insights_update: new Date(),
+            })
+            .eq("ad_id", adRecord.ad_id);
+
+          if (updateError) {
+            errors.push(
+              `Failed to update ad ${adRecord.ad_id}: ${updateError.message}`
+            );
+          } else {
+            fixedCount++;
+            console.log(
+              `✅ Fixed ad ${adRecord.ad_id} - Impressions: ${validInsights.impressions}, Spend: ${validInsights.spend}`
+            );
+          }
+        } else {
+          console.log(
+            `⚠️ Could not get valid insights for ad ${adRecord.ad_id}`
+          );
+          errors.push(`No valid insights available for ad ${adRecord.ad_id}`);
+        }
+
+        // Add delay between requests to avoid rate limits
+        await delay(500);
+      } catch (error: any) {
+        const errorMsg = `Error fixing ad ${adRecord.ad_id}: ${error.message}`;
+        console.error(errorMsg);
+        errors.push(errorMsg);
+      }
+    }
+
+    console.log(
+      `🔧 Zero spend/impressions fix completed. Fixed: ${fixedCount}/${totalCount}`
+    );
+    return { fixed: fixedCount, total: totalCount, errors };
+  } catch (error: any) {
+    const errorMsg = `Failed to fix zero spend/impressions: ${error.message}`;
+    console.error(errorMsg);
+    return { fixed: fixedCount, total: totalCount, errors: [errorMsg] };
+  }
+}
+
 // Export the POST handler with QStash signature verification
 export const POST = verifySignatureAppRouter(handler);
+
+// NEW: GET endpoint to fix zero spend/impressions issues
+export async function GET(request: Request) {
+  const supabase = await createClient();
+  const { searchParams } = new URL(request.url);
+  const accountId = searchParams.get("accountId");
+  const action = searchParams.get("action");
+
+  if (!accountId) {
+    return NextResponse.json(
+      { error: "accountId parameter is required" },
+      { status: 400 }
+    );
+  }
+
+  if (action === "fix-zero-data") {
+    try {
+      console.log(`🔧 Manual fix requested for account ${accountId}`);
+
+      const requestId = `fix-zero-${accountId}-${Date.now()}`;
+      const result = await fixZeroSpendImpressions(
+        accountId,
+        supabase,
+        requestId
+      );
+
+      return NextResponse.json({
+        success: true,
+        message: `Fixed ${result.fixed} out of ${result.total} ads with zero data`,
+        details: {
+          fixed: result.fixed,
+          total: result.total,
+          errors: result.errors,
+        },
+      });
+    } catch (error: any) {
+      console.error("Error fixing zero data:", error);
+      return NextResponse.json(
+        { error: `Failed to fix zero data: ${error.message}` },
+        { status: 500 }
+      );
+    }
+  }
+
+  // Default: Return account status and zero data count
+  try {
+    const { data: zeroAds, error } = await supabase
+      .from("meta_ads")
+      .select("ad_id, name, impressions, spend")
+      .eq("account_id", accountId)
+      .eq("spend", 0)
+      .eq("impressions", 0);
+
+    if (error) {
+      throw error;
+    }
+
+    return NextResponse.json({
+      accountId,
+      zeroDataAds: zeroAds?.length || 0,
+      ads: zeroAds || [],
+      message: `Found ${
+        zeroAds?.length || 0
+      } ads with zero spend and impressions`,
+      fixUrl: `/api/meta-marketing-worker?accountId=${accountId}&action=fix-zero-data`,
+    });
+  } catch (error: any) {
+    console.error("Error checking zero data:", error);
+    return NextResponse.json(
+      { error: `Failed to check zero data: ${error.message}` },
+      { status: 500 }
+    );
+  }
+}
