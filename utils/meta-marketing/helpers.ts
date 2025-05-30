@@ -116,6 +116,63 @@ export function getLast6MonthsDateRange() {
   };
 }
 
+// Helper function to map Meta API status to our database enum values with effective status priority
+export function mapToValidEffectiveStatus(
+  status?: string,
+  effectiveStatus?: string,
+  configuredStatus?: string
+): string {
+  // Valid values in our database enum
+  const validStatuses = ["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"];
+
+  // Priority order: effective_status > configured_status > status
+  const statusToCheck = effectiveStatus || configuredStatus || status;
+
+  if (!statusToCheck) {
+    console.warn("No status provided, using PAUSED as default");
+    return "PAUSED";
+  }
+
+  // Enhanced mapping for Meta's effective status values
+  const statusMap: Record<string, string> = {
+    // Standard statuses
+    ACTIVE: "ACTIVE",
+    PAUSED: "PAUSED",
+    DELETED: "DELETED",
+    ARCHIVED: "ARCHIVED",
+
+    // Meta effective status specific values
+    CAMPAIGN_PAUSED: "PAUSED",
+    ADSET_PAUSED: "PAUSED",
+    DISAPPROVED: "PAUSED",
+    PENDING_REVIEW: "PAUSED",
+    PREAPPROVED: "ACTIVE",
+    PENDING_BILLING_INFO: "PAUSED",
+    CAMPAIGN_GROUP_PAUSED: "PAUSED",
+    IN_PROCESS: "ACTIVE",
+    WITH_ISSUES: "PAUSED",
+  };
+
+  // Normalize to uppercase for comparison
+  const normalizedStatus = statusToCheck.toUpperCase();
+
+  // If we have a direct mapping, use it
+  if (normalizedStatus in statusMap) {
+    return statusMap[normalizedStatus];
+  }
+
+  // If the status is already a valid enum value, return it
+  if (validStatuses.includes(normalizedStatus)) {
+    return normalizedStatus;
+  }
+
+  // Default fallback if we can't map it
+  console.warn(
+    `Could not map status '${statusToCheck}' to a valid enum value, using PAUSED as default`
+  );
+  return "PAUSED";
+}
+
 // Helper function to map Meta API status to our database enum values
 export function mapToValidStatus(status: string): string {
   // Valid values in our database enum
@@ -225,7 +282,11 @@ export async function saveAdToDatabase(
     const adRecord = {
       ad_id: ad.id,
       name: ad.name,
-      status: mapToValidStatus(ad.status || "PAUSED"),
+      status: mapToValidEffectiveStatus(
+        ad.status,
+        ad.effective_status,
+        ad.configured_status
+      ),
       account_id: accountId,
       campaign_id: campaignId,
       ad_set_id: adSetId,

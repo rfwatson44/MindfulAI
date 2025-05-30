@@ -23,20 +23,13 @@ import {
   fetchCreativeDetails,
 } from "@/utils/meta-marketing/creative-management";
 
-// Helper functions (copied from original route)
-function safeParseInt(value: string | undefined, defaultValue = 0): number {
-  if (value === undefined) return defaultValue;
-  const parsed = parseInt(value, 10);
-  return isNaN(parsed) ? defaultValue : parsed;
-}
+import {
+  mapToValidEffectiveStatus,
+  safeParseInt,
+  safeParseFloat,
+} from "@/utils/meta-marketing/helpers";
 
-function safeParseFloat(value: string | undefined, defaultValue = 0): number {
-  if (value === undefined) return defaultValue;
-  const parsed = parseFloat(value);
-  return isNaN(parsed) ? defaultValue : parsed;
-}
-
-// Rate limiting configuration
+// Rate limiting configuration with environment variable overrides
 const RATE_LIMIT_CONFIG = {
   DEVELOPMENT: {
     MAX_SCORE: 60,
@@ -57,16 +50,19 @@ const RATE_LIMIT_CONFIG = {
     WRITE: 3,
     INSIGHTS: 2,
   },
-  BATCH_SIZE: 50, // Reduced from 100 to 50 to prevent overwhelming the API
-  MIN_DELAY: 200, // Increased from 100 to 200ms for more conservative pacing
-  BURST_DELAY: 500, // Increased from 300 to 500ms to reduce burst requests
-  INSIGHTS_DELAY: 1000, // Increased from 600 to 1000ms for insights (most expensive calls)
-  MAX_PROCESSING_TIME: 80000, // Keep at 80 seconds
-  SAFETY_BUFFER: 5000, // Keep safety buffer
-  // New: Additional delays for specific operations
-  CAMPAIGN_DELAY: 300, // Delay between campaign processing
-  ADSET_DELAY: 400, // Delay between adset processing
-  AD_DELAY: 500, // Delay between ad processing (most intensive)
+  BATCH_SIZE: parseInt(process.env.META_WORKER_BATCH_SIZE || "25"), // Configurable batch size
+  MIN_DELAY: parseInt(process.env.META_WORKER_MIN_DELAY || "150"), // Configurable delays
+  BURST_DELAY: parseInt(process.env.META_WORKER_BURST_DELAY || "300"),
+  INSIGHTS_DELAY: parseInt(process.env.META_WORKER_INSIGHTS_DELAY || "600"),
+  MAX_PROCESSING_TIME: parseInt(process.env.META_WORKER_MAX_TIME || "60000"), // Configurable max time
+  SAFETY_BUFFER: parseInt(process.env.META_WORKER_SAFETY_BUFFER || "8000"), // Configurable safety buffer
+  // Enhanced time management
+  CAMPAIGN_DELAY: parseInt(process.env.META_WORKER_CAMPAIGN_DELAY || "200"),
+  ADSET_DELAY: parseInt(process.env.META_WORKER_ADSET_DELAY || "250"),
+  AD_DELAY: parseInt(process.env.META_WORKER_AD_DELAY || "300"),
+  // Time-based chunking
+  MAX_ITEMS_PER_CHUNK: parseInt(process.env.META_WORKER_MAX_ITEMS || "20"), // Configurable chunk size
+  TIME_CHECK_INTERVAL: parseInt(process.env.META_WORKER_TIME_CHECK || "5"), // Configurable check interval
 };
 
 // Meta API configuration
@@ -77,18 +73,59 @@ const META_CONFIG = {
 // Helper function to delay execution
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Time management helper
+// Time management helper - More aggressive timeout prevention
 function shouldCreateFollowUpJob(startTime: number): boolean {
   const elapsedTime = Date.now() - startTime;
-  return (
-    elapsedTime >
-    RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME - RATE_LIMIT_CONFIG.SAFETY_BUFFER
-  );
+  const timeLimit =
+    RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME - RATE_LIMIT_CONFIG.SAFETY_BUFFER;
+
+  console.log(`⏱️ Time check: ${elapsedTime}ms elapsed, limit: ${timeLimit}ms`);
+
+  return elapsedTime > timeLimit;
 }
 
 function getRemainingTime(startTime: number): number {
   const elapsedTime = Date.now() - startTime;
-  return Math.max(0, RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME - elapsedTime);
+  const remaining = Math.max(
+    0,
+    RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME - elapsedTime
+  );
+
+  if (remaining < RATE_LIMIT_CONFIG.SAFETY_BUFFER) {
+    console.log(
+      `⚠️ WARNING: Only ${remaining}ms remaining, should create follow-up job`
+    );
+  }
+
+  return remaining;
+}
+
+// New: Check if we should stop processing due to time constraints
+function shouldStopProcessing(
+  startTime: number,
+  itemsProcessed: number
+): boolean {
+  const elapsedTime = Date.now() - startTime;
+  const timeLimit =
+    RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME - RATE_LIMIT_CONFIG.SAFETY_BUFFER;
+
+  // Stop if we're approaching time limit
+  if (elapsedTime > timeLimit) {
+    console.log(
+      `🛑 Stopping processing: Time limit reached (${elapsedTime}ms > ${timeLimit}ms)`
+    );
+    return true;
+  }
+
+  // Stop if we've processed enough items for this chunk
+  if (itemsProcessed >= RATE_LIMIT_CONFIG.MAX_ITEMS_PER_CHUNK) {
+    console.log(
+      `🛑 Stopping processing: Item limit reached (${itemsProcessed} >= ${RATE_LIMIT_CONFIG.MAX_ITEMS_PER_CHUNK})`
+    );
+    return true;
+  }
+
+  return false;
 }
 
 // Extended job payload for chunked processing
@@ -1302,11 +1339,13 @@ async function processCampaignsPhase(
 
     console.log(`Retrieved ${campaigns.length} campaigns with current options`);
 
-    // Process each campaign
+    // Process each campaign with enhanced time management
     for (let i = 0; i < campaigns.length; i++) {
-      // Check time limit frequently
-      if (shouldCreateFollowUpJob(startTime)) {
-        console.log(`Time limit reached after processing ${i} campaigns`);
+      // Check time and item limits frequently
+      if (shouldStopProcessing(startTime, i)) {
+        console.log(
+          `⏱️ Stopping campaigns processing after ${i} items due to time/item limits`
+        );
 
         // Get the proper next cursor from the campaigns object
         let nextCursor = "";
@@ -1334,7 +1373,22 @@ async function processCampaignsPhase(
           after: nextCursor,
           iteration,
         });
-        break;
+
+        return {
+          phase: "campaigns",
+          status: "chunked",
+          processed: i,
+          total: campaigns.length,
+          nextCursor,
+        };
+      }
+
+      // Check for cancellation every 5 items
+      if (i % RATE_LIMIT_CONFIG.TIME_CHECK_INTERVAL === 0) {
+        if (await checkJobCancellation(supabase, requestId)) {
+          console.log("Job cancelled during campaigns processing");
+          return { phase: "campaigns", status: "cancelled" };
+        }
       }
 
       const campaign = campaigns[i];
@@ -1387,7 +1441,11 @@ async function processCampaignsPhase(
           campaign_id: campaign.id,
           account_id: accountId,
           name: campaign.name || "",
-          status: campaign.status || "UNKNOWN",
+          status:
+            mapToValidEffectiveStatus(
+              campaign.effective_status,
+              campaign.configured_status
+            ) || "UNKNOWN",
           configured_status: campaign.configured_status || null,
           effective_status: campaign.effective_status || null,
           objective: campaign.objective || "",
@@ -1716,10 +1774,10 @@ async function processAdsetsPhase(
   ];
 
   for (let i = 0; i < currentBatch.length; i++) {
-    // Check time limit more frequently
-    if (shouldCreateFollowUpJob(startTime)) {
+    // Check time and item limits more frequently
+    if (shouldStopProcessing(startTime, i)) {
       console.log(
-        `⏰ Time limit reached after processing ${i} campaigns, creating follow-up job`
+        `⏱️ Stopping adsets processing after ${i} campaigns due to time/item limits`
       );
       await createFollowUpJob({
         accountId,
@@ -1731,7 +1789,22 @@ async function processAdsetsPhase(
         after: "",
         iteration,
       });
-      break;
+
+      return {
+        phase: "adsets",
+        status: "chunked",
+        processed: i,
+        total: currentBatch.length,
+        remaining: [...currentBatch.slice(i), ...remainingCampaigns].length,
+      };
+    }
+
+    // Check for cancellation every 3 campaigns
+    if (i % 3 === 0) {
+      if (await checkJobCancellation(supabase, requestId)) {
+        console.log("Job cancelled during adsets processing");
+        return { phase: "adsets", status: "cancelled" };
+      }
     }
 
     const campaignId = currentBatch[i];
@@ -1740,6 +1813,7 @@ async function processAdsetsPhase(
 
     console.log(`Campaign ID: ${campaignId}`);
     console.log(`Progress: ${progress}%`);
+    console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
     await updateJobStatus(supabase, requestId, "processing", progress);
 
@@ -1824,7 +1898,11 @@ async function processAdsetsPhase(
             campaign_id: campaignId,
             account_id: accountId,
             name: adset.name || "",
-            status: adset.status || "UNKNOWN",
+            status: mapToValidEffectiveStatus(
+              adset.status,
+              adset.effective_status,
+              adset.configured_status
+            ),
             configured_status: adset.configured_status || null,
             effective_status: adset.effective_status || null,
             optimization_goal: adset.optimization_goal || null,
@@ -2094,27 +2172,44 @@ async function processAdsPhase(
   const adsetsToProcess = adsetIds.slice(0, RATE_LIMIT_CONFIG.BATCH_SIZE);
 
   for (let i = 0; i < adsetsToProcess.length; i++) {
-    // Check time limit frequently
-    if (shouldCreateFollowUpJob(startTime)) {
-      console.log(`Time limit reached after processing ${i} adsets for ads`);
+    // Check time and item limits frequently
+    if (shouldStopProcessing(startTime, i)) {
+      console.log(
+        `⏱️ Stopping ads processing after ${i} adsets due to time/item limits`
+      );
       await createFollowUpJob({
         accountId,
         timeframe,
         action: "get24HourData",
         requestId,
         phase: "ads",
-        adsetIds,
+        adsetIds: adsetIds.slice(i), // Continue from current adset
         after: after,
         iteration,
       });
-      break;
+
+      return {
+        phase: "ads",
+        status: "chunked",
+        processed: i,
+        total: adsetsToProcess.length,
+        remaining: adsetIds.length - i,
+      };
+    }
+
+    // Check for cancellation every 2 adsets
+    if (i % 2 === 0) {
+      if (await checkJobCancellation(supabase, requestId)) {
+        console.log("Job cancelled during ads processing");
+        return { phase: "ads", status: "cancelled" };
+      }
     }
 
     const adsetId = adsetsToProcess[i];
     console.log(
-      `Getting ads for adset ${adsetId}, remaining time: ${getRemainingTime(
-        startTime
-      )}ms`
+      `Getting ads for adset ${adsetId} (${i + 1}/${
+        adsetsToProcess.length
+      }), remaining time: ${getRemainingTime(startTime)}ms`
     );
 
     try {
@@ -2154,17 +2249,43 @@ async function processAdsPhase(
 
       console.log(`Retrieved ${ads.length} ads for adset ${adsetId}`);
 
-      // Process each ad
-      for (const ad of ads) {
-        // Check time for each ad
-        if (shouldCreateFollowUpJob(startTime)) {
-          console.log("Time limit reached during ad processing");
-          break;
+      // Process each ad with time management
+      for (let j = 0; j < ads.length; j++) {
+        const ad = ads[j];
+
+        // Check time for each ad - stop if approaching limit
+        if (shouldStopProcessing(startTime, processedAds.length)) {
+          console.log(
+            `⏱️ Time limit reached during ad processing, processed ${processedAds.length} ads`
+          );
+
+          // Create follow-up job to continue from where we left off
+          await createFollowUpJob({
+            accountId,
+            timeframe,
+            action: "get24HourData",
+            requestId,
+            phase: "ads",
+            adsetIds: adsetIds.slice(i), // Continue from current adset
+            after: after,
+            iteration,
+          });
+
+          return {
+            phase: "ads",
+            status: "chunked_during_ads",
+            processed: processedAds.length,
+            currentAdset: i,
+            totalAdsets: adsetsToProcess.length,
+          };
         }
 
         try {
-          console.log(`\n--- Processing ad ${ad.id} ---`);
+          console.log(
+            `\n--- Processing ad ${j + 1}/${ads.length}: ${ad.id} ---`
+          );
           console.log(`Ad name: ${ad.name}`);
+          console.log(`Remaining time: ${getRemainingTime(startTime)}ms`);
 
           // Get insights for this ad
           let adInsights = null;
@@ -2191,6 +2312,138 @@ async function processAdsPhase(
             adInsights = null;
           }
 
+          // Process creative details with retry logic
+          let creativeDetails = null;
+          let creativeType = "UNKNOWN";
+          let assetFeedSpec = null;
+          let imageUrl = null;
+          let videoId = null;
+          let thumbnailUrl = null;
+
+          if (ad.creative && ad.creative.id) {
+            console.log(
+              `🎨 Processing creative ${ad.creative.id} for ad ${ad.id}`
+            );
+
+            try {
+              // Use enhanced creative fetching with retry logic
+              creativeDetails = await fetchCreativeDetails(ad, 300);
+
+              if (creativeDetails) {
+                console.log(
+                  `✅ Creative details fetched for ${ad.creative.id}`
+                );
+
+                // Extract creative data
+                creativeType = creativeDetails.creative_type || "UNKNOWN";
+                assetFeedSpec = creativeDetails.asset_feed_spec;
+                imageUrl = creativeDetails.image_url;
+                videoId = creativeDetails.video_id;
+                thumbnailUrl = creativeDetails.thumbnail_url;
+
+                // CRITICAL: Ensure asset_feed_spec is present when we have creative_id
+                if (!assetFeedSpec) {
+                  console.warn(
+                    `⚠️ No asset_feed_spec for creative ${ad.creative.id}, creating fallback`
+                  );
+                  assetFeedSpec = {
+                    _fallback_source: "MISSING_ASSET_FEED_SPEC",
+                    creative_id: ad.creative.id,
+                    ad_id: ad.id,
+                    error: "Creative fetched but no asset_feed_spec available",
+                  };
+                }
+              } else {
+                console.error(
+                  `❌ Failed to fetch creative details for ${ad.creative.id}`
+                );
+                creativeType = "FETCH_FAILED";
+                assetFeedSpec = {
+                  _fallback_source: "CREATIVE_FETCH_FAILED",
+                  creative_id: ad.creative.id,
+                  ad_id: ad.id,
+                  error: "Creative fetch returned null",
+                };
+              }
+            } catch (creativeError) {
+              console.error(
+                `❌ Error processing creative ${ad.creative.id}:`,
+                creativeError
+              );
+              creativeType = "FETCH_ERROR";
+              assetFeedSpec = {
+                _fallback_source: "CREATIVE_FETCH_ERROR",
+                creative_id: ad.creative.id,
+                ad_id: ad.id,
+                error:
+                  creativeError instanceof Error
+                    ? creativeError.message
+                    : "Unknown creative error",
+              };
+            }
+          } else {
+            console.log(`⚠️ No creative ID found for ad ${ad.id}`);
+          }
+
+          // Extract engagement metrics from insights
+          let engagementMetrics = null;
+          if (adInsights) {
+            engagementMetrics = {
+              // Standard engagement actions
+              post_engagement:
+                adInsights.actions?.find(
+                  (action) => action.action_type === "post_engagement"
+                )?.value || "0",
+              page_engagement:
+                adInsights.actions?.find(
+                  (action) => action.action_type === "page_engagement"
+                )?.value || "0",
+              like:
+                adInsights.actions?.find(
+                  (action) => action.action_type === "like"
+                )?.value || "0",
+              comment:
+                adInsights.actions?.find(
+                  (action) => action.action_type === "comment"
+                )?.value || "0",
+              share:
+                adInsights.actions?.find(
+                  (action) => action.action_type === "share"
+                )?.value || "0",
+
+              // Video engagement (if applicable)
+              video_view:
+                adInsights.actions?.find(
+                  (action) => action.action_type === "video_view"
+                )?.value || "0",
+              video_p25_watched:
+                adInsights.video_p25_watched_actions?.[0]?.value || "0",
+              video_p50_watched:
+                adInsights.video_p50_watched_actions?.[0]?.value || "0",
+              video_p75_watched:
+                adInsights.video_p75_watched_actions?.[0]?.value || "0",
+              video_p100_watched:
+                adInsights.video_p100_watched_actions?.[0]?.value || "0",
+
+              // Link engagement
+              link_click:
+                adInsights.actions?.find(
+                  (action) => action.action_type === "link_click"
+                )?.value || "0",
+              outbound_click: adInsights.outbound_clicks?.[0]?.value || "0",
+
+              // Other engagement metrics
+              photo_view:
+                adInsights.actions?.find(
+                  (action) => action.action_type === "photo_view"
+                )?.value || "0",
+              landing_page_view:
+                adInsights.actions?.find(
+                  (action) => action.action_type === "landing_page_view"
+                )?.value || "0",
+            };
+          }
+
           // Create comprehensive ad data structure
           const adData = {
             ad_id: ad.id,
@@ -2198,13 +2451,17 @@ async function processAdsPhase(
             account_id: accountId,
             campaign_id: campaignId,
             name: ad.name || "",
-            status: ad.status || "UNKNOWN",
+            status: mapToValidEffectiveStatus(
+              ad.status,
+              ad.effective_status,
+              ad.configured_status
+            ),
             configured_status: ad.configured_status || null,
             effective_status: ad.effective_status || null,
             creative: ad.creative || null,
             creative_id: ad.creative?.id || null,
-            creative_type: "UNKNOWN",
-            asset_feed_spec: null,
+            creative_type: creativeType,
+            asset_feed_spec: assetFeedSpec,
             object_story_spec: ad.creative?.object_story_spec || null,
             tracking_specs: ad.tracking_specs || null,
             conversion_specs: ad.conversion_specs || null,
@@ -2215,18 +2472,27 @@ async function processAdsPhase(
             issues_info: ad.issues_info || null,
             engagement_audience: ad.engagement_audience || null,
             preview_url: ad.preview_url || null,
-            template_url: ad.template_url || null,
-            thumbnail_url: ad.thumbnail_url || null,
-            image_url: null,
-            video_id: null,
-            instagram_permalink_url: ad.instagram_permalink_url || null,
-            effective_object_story_id: ad.effective_object_story_id || null,
-            url_tags: ad.url_tags || null,
+            template_url:
+              creativeDetails?.template_url || ad.template_url || null,
+            thumbnail_url: thumbnailUrl || ad.thumbnail_url || null,
+            image_url: imageUrl,
+            video_id: videoId,
+            instagram_permalink_url:
+              creativeDetails?.instagram_permalink_url ||
+              ad.instagram_permalink_url ||
+              null,
+            effective_object_story_id:
+              creativeDetails?.effective_object_story_id ||
+              ad.effective_object_story_id ||
+              null,
+            url_tags: creativeDetails?.url_tags || ad.url_tags || null,
             // Insights data
             impressions: safeParseInt(adInsights?.impressions),
             clicks: safeParseInt(adInsights?.clicks),
             reach: safeParseInt(adInsights?.reach),
             spend: safeParseFloat(adInsights?.spend),
+            // Engagement metrics
+            engagement_metrics: engagementMetrics,
             conversions: adInsights?.actions
               ? adInsights.actions.reduce((acc: any, action: any) => {
                   acc[action.action_type] = action.value;
@@ -2262,6 +2528,23 @@ async function processAdsPhase(
           } else {
             processedAds.push(adData);
             console.log(`✅ Successfully stored ad ${ad.id}`);
+
+            // Save engagement metrics for this ad
+            try {
+              const currentDate = new Date().toISOString().split("T")[0]; // YYYY-MM-DD format
+              await saveAdEngagementMetrics(
+                supabase,
+                ad.id,
+                adInsights,
+                currentDate
+              );
+            } catch (engagementError) {
+              console.error(
+                `⚠️ Failed to save engagement metrics for ad ${ad.id}:`,
+                engagementError
+              );
+              // Don't increment totalErrors as this is not critical for main ad processing
+            }
           }
 
           await delay(RATE_LIMIT_CONFIG.AD_DELAY);
@@ -2390,6 +2673,211 @@ async function processAdsPhase(
     hasMoreAdsets: remainingAdsetIds.length > 0,
     remainingAdsets: remainingAdsetIds.length,
   };
+}
+
+// Helper function to save ad engagement metrics
+async function saveAdEngagementMetrics(
+  supabase: any,
+  adId: string,
+  insights: InsightResult | null,
+  date: string
+) {
+  try {
+    console.log(`📊 Processing engagement metrics for ad ${adId}...`);
+
+    // ALWAYS create a record, even if insights are null
+    const engagementData = {
+      ad_id: adId,
+      date: date,
+      // Direct metrics from insights
+      inline_link_clicks: insights
+        ? safeParseInt(insights.inline_link_clicks)
+        : null,
+      inline_post_engagement: insights
+        ? safeParseInt(insights.inline_post_engagement)
+        : null,
+
+      // Video metrics from specific video action arrays
+      video_30s_watched: insights?.video_30_sec_watched_actions
+        ? safeParseInt(insights.video_30_sec_watched_actions[0]?.value)
+        : null,
+      video_25_percent_watched: insights?.video_p25_watched_actions
+        ? safeParseInt(insights.video_p25_watched_actions[0]?.value)
+        : null,
+      video_50_percent_watched: insights?.video_p50_watched_actions
+        ? safeParseInt(insights.video_p50_watched_actions[0]?.value)
+        : null,
+      video_75_percent_watched: insights?.video_p75_watched_actions
+        ? safeParseInt(insights.video_p75_watched_actions[0]?.value)
+        : null,
+      video_95_percent_watched: insights?.video_p95_watched_actions
+        ? safeParseInt(insights.video_p95_watched_actions[0]?.value)
+        : null,
+
+      // Engagement metrics from actions array
+      page_engagement: insights?.actions?.find(
+        (a: any) => a.action_type === "page_engagement"
+      )?.value
+        ? safeParseInt(
+            insights.actions?.find(
+              (a: any) => a.action_type === "page_engagement"
+            )?.value
+          )
+        : null,
+      post_engagement: insights?.actions?.find(
+        (a: any) => a.action_type === "post_engagement"
+      )?.value
+        ? safeParseInt(
+            insights.actions?.find(
+              (a: any) => a.action_type === "post_engagement"
+            )?.value
+          )
+        : null,
+      post_comments: insights?.actions?.find(
+        (a: any) => a.action_type === "comment"
+      )?.value
+        ? safeParseInt(
+            insights.actions?.find((a: any) => a.action_type === "comment")
+              ?.value
+          )
+        : null,
+
+      // Video view metrics
+      two_sec_video_views: insights?.video_continuous_2_sec_watched_actions
+        ? safeParseInt(
+            insights.video_continuous_2_sec_watched_actions[0]?.value
+          )
+        : null,
+      three_sec_video_views: insights?.actions?.find(
+        (a: any) => a.action_type === "video_view"
+      )?.value
+        ? safeParseInt(
+            insights.actions?.find((a: any) => a.action_type === "video_view")
+              ?.value
+          )
+        : null,
+      thruplays: insights?.video_thruplay_watched_actions
+        ? safeParseInt(insights.video_thruplay_watched_actions[0]?.value)
+        : null,
+
+      // Cost metrics from cost_per_action_type
+      cost_per_link_click: insights?.cost_per_action_type?.find(
+        (c: any) => c.action_type === "link_click"
+      )?.value
+        ? safeParseFloat(
+            insights.cost_per_action_type?.find(
+              (c: any) => c.action_type === "link_click"
+            )?.value
+          )
+        : null,
+      cost_per_post_engagement: insights?.cost_per_action_type?.find(
+        (c: any) => c.action_type === "post_engagement"
+      )?.value
+        ? safeParseFloat(
+            insights.cost_per_action_type?.find(
+              (c: any) => c.action_type === "post_engagement"
+            )?.value
+          )
+        : null,
+      cost_per_page_engagement: insights?.cost_per_action_type?.find(
+        (c: any) => c.action_type === "page_engagement"
+      )?.value
+        ? safeParseFloat(
+            insights.cost_per_action_type?.find(
+              (c: any) => c.action_type === "page_engagement"
+            )?.value
+          )
+        : null,
+      cost_per_thruplay: insights?.cost_per_action_type?.find(
+        (c: any) => c.action_type === "video_thruplay_watched"
+      )?.value
+        ? safeParseFloat(
+            insights.cost_per_action_type?.find(
+              (c: any) => c.action_type === "video_thruplay_watched"
+            )?.value
+          )
+        : null,
+      cost_per_2sec_view: insights?.cost_per_action_type?.find(
+        (c: any) => c.action_type === "video_continuous_2_sec_watched"
+      )?.value
+        ? safeParseFloat(
+            insights.cost_per_action_type?.find(
+              (c: any) => c.action_type === "video_continuous_2_sec_watched"
+            )?.value
+          )
+        : null,
+      cost_per_3sec_view: insights?.cost_per_action_type?.find(
+        (c: any) => c.action_type === "video_view"
+      )?.value
+        ? safeParseFloat(
+            insights.cost_per_action_type?.find(
+              (c: any) => c.action_type === "video_view"
+            )?.value
+          )
+        : null,
+
+      // Calculated metrics
+      avg_watch_time_seconds: insights?.video_avg_time_watched_actions
+        ? safeParseFloat(insights.video_avg_time_watched_actions[0]?.value)
+        : null,
+
+      // VTR and Hook Rate (calculated)
+      vtr_percentage:
+        insights?.video_p25_watched_actions && insights?.impressions
+          ? (safeParseInt(insights.video_p25_watched_actions[0]?.value) /
+              safeParseInt(insights.impressions)) *
+            100
+          : null,
+      hook_rate_percentage:
+        insights?.video_continuous_2_sec_watched_actions &&
+        insights?.impressions
+          ? (safeParseInt(
+              insights.video_continuous_2_sec_watched_actions[0]?.value
+            ) /
+              safeParseInt(insights.impressions)) *
+            100
+          : null,
+
+      // Metadata
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    console.log(`📊 Engagement data prepared for ad ${adId}:`, {
+      insights_available: insights ? true : false,
+      inline_link_clicks: engagementData.inline_link_clicks,
+      video_30s_watched: engagementData.video_30s_watched,
+      thruplays: engagementData.thruplays,
+    });
+
+    const { error: metricsError } = await supabase
+      .from("ad_engagement_metrics")
+      .upsert([engagementData], {
+        onConflict: "ad_id,date",
+        ignoreDuplicates: false,
+      });
+
+    if (metricsError) {
+      console.error(
+        `❌ Error saving engagement metrics for ad ${adId}:`,
+        metricsError
+      );
+      return false;
+    } else {
+      console.log(
+        `✅ Saved engagement metrics for ad ${adId} (insights: ${
+          insights ? "available" : "null"
+        })`
+      );
+      return true;
+    }
+  } catch (error) {
+    console.error(
+      `❌ Error processing engagement metrics for ad ${adId}:`,
+      error
+    );
+    return false;
+  }
 }
 
 // Export the POST handler with QStash signature verification
