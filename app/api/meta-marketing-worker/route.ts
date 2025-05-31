@@ -1924,103 +1924,9 @@ async function processCampaignsPhase(
           process.env.MAX_WORKER_ITERATIONS || "100"
         );
 
-        if (nextIteration >= baseMaxIterations - 5) {
-          // If within 5 iterations of limit
-          console.log(
-            `🏁 Approaching iteration limit (${nextIteration}/${baseMaxIterations}), processing remaining campaigns in current job`
-          );
-
-          // Process remaining campaigns without creating follow-up job
-          const remainingCampaigns = campaigns.slice(i);
-          console.log(
-            `📊 Processing ${remainingCampaigns.length} remaining campaigns in current iteration`
-          );
-
-          for (const campaign of remainingCampaigns) {
-            try {
-              // Quick processing without insights to save time
-              const campaignData = {
-                campaign_id: campaign.id,
-                account_id: accountId,
-                name: campaign.name || "",
-                status:
-                  mapToValidEffectiveStatus(
-                    campaign.effective_status,
-                    campaign.configured_status
-                  ) || "UNKNOWN",
-                configured_status: campaign.configured_status || null,
-                effective_status: campaign.effective_status || null,
-                objective: campaign.objective || "",
-                buying_type: campaign.buying_type || null,
-                bid_strategy: campaign.bid_strategy || null,
-                daily_budget: campaign.daily_budget
-                  ? parseFloat(campaign.daily_budget)
-                  : null,
-                lifetime_budget: campaign.lifetime_budget
-                  ? parseFloat(campaign.lifetime_budget)
-                  : null,
-                budget_remaining: campaign.budget_remaining
-                  ? parseFloat(campaign.budget_remaining)
-                  : null,
-                spend_cap: campaign.spend_cap
-                  ? parseFloat(campaign.spend_cap)
-                  : null,
-                start_time: campaign.start_time
-                  ? new Date(campaign.start_time).toISOString()
-                  : null,
-                end_time: campaign.stop_time
-                  ? new Date(campaign.stop_time).toISOString()
-                  : null,
-                promoted_object: campaign.promoted_object || null,
-                pacing_type: campaign.pacing_type || null,
-                special_ad_categories: campaign.special_ad_categories || [],
-                source_campaign_id: campaign.source_campaign_id || null,
-                topline_id: campaign.topline_id || null,
-                recommendations: campaign.recommendations || null,
-                last_updated: new Date(),
-                created_at: new Date(),
-                updated_at: new Date(),
-              };
-
-              await supabase.from("meta_campaigns").upsert([campaignData], {
-                onConflict: "campaign_id",
-                ignoreDuplicates: false,
-              });
-
-              campaignIds.push(campaign.id);
-              processedCampaigns.push(campaign.id);
-            } catch (error) {
-              console.error(`Error processing campaign ${campaign.id}:`, error);
-              totalErrors++;
-            }
-          }
-
-          // Mark as completed since we processed everything we could
-          await updateJobStatus(
-            supabase,
-            requestId,
-            "completed",
-            100,
-            undefined,
-            {
-              message: "Campaigns processing completed within iteration limit",
-              processed: processedCampaigns.length,
-              total: campaigns.length,
-              errors: totalErrors,
-              reason: "iteration_limit_reached",
-            }
-          );
-
-          return {
-            phase: "campaigns",
-            status: "completed",
-            processed: processedCampaigns.length,
-            total: campaigns.length,
-            campaignIds,
-            errors: totalErrors,
-            reason: "iteration_limit_reached",
-          };
-        }
+        // Remove the artificial iteration limit check - let it process naturally
+        // The worker should only stop based on time, memory, or natural completion
+        // if (nextIteration >= baseMaxIterations - 5) { ... }
 
         await createFollowUpJob({
           accountId,
@@ -2182,29 +2088,9 @@ async function processCampaignsPhase(
           source_campaign_id: campaign.source_campaign_id || null,
           topline_id: campaign.topline_id || null,
           recommendations: campaign.recommendations || null,
-          // Insights data
-          impressions: safeParseInt(campaignInsights?.impressions),
-          clicks: safeParseInt(campaignInsights?.clicks),
-          reach: safeParseInt(campaignInsights?.reach),
-          spend: safeParseFloat(campaignInsights?.spend),
-          conversions: campaignInsights?.actions
-            ? campaignInsights.actions.reduce((acc: any, action: any) => {
-                acc[action.action_type] = action.value;
-                return acc;
-              }, {})
-            : null,
-          cost_per_conversion:
-            campaignInsights?.actions && campaignInsights.actions.length > 0
-              ? safeParseFloat(campaignInsights.spend) /
-                campaignInsights.actions.reduce(
-                  (sum: number, action: any) =>
-                    sum + safeParseInt(action.value),
-                  0
-                )
-              : null,
-          last_updated: new Date().toISOString(),
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          last_updated: new Date(),
+          created_at: new Date(),
+          updated_at: new Date(),
         };
 
         console.log(`💾 Attempting to store campaign ${campaign.id}`);
