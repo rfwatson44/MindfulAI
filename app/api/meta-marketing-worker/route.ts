@@ -141,11 +141,14 @@ interface ChunkedJobPayload {
   phase?: string; // 'account' | 'campaigns' | 'adsets' | 'ads'
   campaignIds?: string[];
   adsetIds?: string[];
+  adIds?: string[]; // Add support for specific ad IDs
   after?: string; // Cursor for pagination instead of offset
   totalItems?: number;
   processedItems?: number;
   accountInfo?: string; // JSON string for passing account info between phases
   iteration?: number; // Added iteration property
+  incremental?: boolean; // Flag for incremental sync
+  reason?: string; // Reason for the sync (webhook_notification, etc.)
 }
 
 // Job status tracking
@@ -1056,8 +1059,24 @@ async function handler(request: Request) {
         break;
 
       default:
+        // Handle incremental sync
+        if (action === "incrementalSync") {
+          console.log("=== EXECUTING INCREMENTAL SYNC ===");
+          console.log(`Incremental sync reason: ${payload.reason}`);
+          console.log(`Incremental sync type: ${phase}`);
+
+          result = await processIncrementalSync(
+            accountId,
+            supabase,
+            timeframe,
+            payload.requestId,
+            payload,
+            startTime,
+            currentIteration
+          );
+        }
         // Legacy support for non-chunked jobs
-        if (action === "get24HourData" || action === "getData") {
+        else if (action === "get24HourData" || action === "getData") {
           console.log("=== EXECUTING LEGACY ACCOUNT PHASE ===");
           await updateJobStatus(supabase, payload.requestId, "processing", 10);
           result = await processAccountPhase(
@@ -1120,7 +1139,7 @@ async function handler(request: Request) {
         requestId,
         "failed",
         0,
-        error.message || "Unknown error occurred"
+        (error as any).message
       );
       console.log("Job status updated to failed");
     } catch (updateError) {
@@ -1130,7 +1149,7 @@ async function handler(request: Request) {
     return Response.json(
       {
         success: false,
-        error: error.message || "Unknown error occurred",
+        error: (error as any).message || "Unknown error occurred",
         requestId: payload?.requestId || "unknown",
       },
       { status: 500 }
@@ -3370,4 +3389,603 @@ export async function GET(request: Request) {
       { status: 500 }
     );
   }
+}
+
+// Process incremental sync for specific objects
+async function processIncrementalSync(
+  accountId: string,
+  supabase: any,
+  timeframe: string,
+  requestId: string,
+  payload: ChunkedJobPayload,
+  startTime: number,
+  iteration: number
+) {
+  console.log("=== STARTING INCREMENTAL SYNC ===");
+  console.log(`Account: ${accountId}`);
+  console.log(`Reason: ${payload.reason}`);
+  console.log(`Type: ${payload.phase}`);
+
+  await updateJobStatus(supabase, requestId, "processing", 10);
+
+  try {
+    switch (payload.phase) {
+      case "campaigns":
+        if (payload.campaignIds && payload.campaignIds.length > 0) {
+          console.log(
+            `🔄 Syncing ${payload.campaignIds.length} specific campaigns`
+          );
+          return await syncSpecificCampaigns(
+            accountId,
+            supabase,
+            timeframe,
+            requestId,
+            payload.campaignIds,
+            startTime
+          );
+        }
+        break;
+
+      case "adsets":
+        if (payload.adsetIds && payload.adsetIds.length > 0) {
+          console.log(`🔄 Syncing ${payload.adsetIds.length} specific adsets`);
+          return await syncSpecificAdsets(
+            accountId,
+            supabase,
+            timeframe,
+            requestId,
+            payload.adsetIds,
+            startTime
+          );
+        }
+        break;
+
+      case "ads":
+        if (payload.adIds && payload.adIds.length > 0) {
+          console.log(`🔄 Syncing ${payload.adIds.length} specific ads`);
+          return await syncSpecificAds(
+            accountId,
+            supabase,
+            timeframe,
+            requestId,
+            payload.adIds,
+            startTime
+          );
+        }
+        break;
+
+      default:
+        throw new Error(`Unsupported incremental sync type: ${payload.phase}`);
+    }
+
+    await updateJobStatus(supabase, requestId, "completed", 100);
+    return {
+      phase: "incremental_sync",
+      status: "completed",
+      reason: payload.reason,
+      type: payload.phase,
+      processed: 0,
+    };
+  } catch (error) {
+    console.error("❌ Incremental sync failed:", error);
+    await updateJobStatus(
+      supabase,
+      requestId,
+      "failed",
+      0,
+      (error as any).message
+    );
+    throw error;
+  }
+}
+
+// Sync specific campaigns
+async function syncSpecificCampaigns(
+  accountId: string,
+  supabase: any,
+  timeframe: string,
+  requestId: string,
+  campaignIds: string[],
+  startTime: number
+) {
+  console.log(`📊 Fetching ${campaignIds.length} specific campaigns`);
+
+  const account = new AdAccount(accountId);
+  const dateRange = getDateRangeForTimeframe(timeframe);
+  let processedCount = 0;
+
+  for (const campaignId of campaignIds) {
+    try {
+      // Check time limits
+      if (shouldStopProcessing(startTime, processedCount)) {
+        console.log(
+          "⏰ Time limit reached, stopping incremental campaign sync"
+        );
+        break;
+      }
+
+      console.log(`🔄 Syncing campaign: ${campaignId}`);
+
+      // Fetch campaign details
+      const campaign = await withRateLimitRetry(
+        async () => {
+          return new Campaign(campaignId).read([
+            "name",
+            "status",
+            "objective",
+            "special_ad_categories",
+            "bid_strategy",
+            "budget_remaining",
+            "buying_type",
+            "daily_budget",
+            "lifetime_budget",
+            "configured_status",
+            "effective_status",
+            "source_campaign_id",
+            "promoted_object",
+            "recommendations",
+            "spend_cap",
+            "topline_id",
+            "pacing_type",
+            "start_time",
+            "stop_time",
+          ]);
+        },
+        {
+          accountId,
+          endpoint: "campaign_details",
+          callType: "READ",
+          points: RATE_LIMIT_CONFIG.POINTS.READ,
+          supabase,
+        }
+      );
+
+      // Get campaign insights
+      const campaignInsights = await getInsights(
+        campaign,
+        supabase,
+        accountId,
+        timeframe
+      );
+
+      // Prepare campaign data
+      const campaignData = {
+        campaign_id: campaign.id,
+        account_id: accountId,
+        name: campaign.name || "",
+        status:
+          mapToValidEffectiveStatus(
+            campaign.effective_status,
+            campaign.configured_status
+          ) || "UNKNOWN",
+        configured_status: campaign.configured_status || null,
+        effective_status: campaign.effective_status || null,
+        objective: campaign.objective || "",
+        buying_type: campaign.buying_type || null,
+        bid_strategy: campaign.bid_strategy || null,
+        daily_budget: campaign.daily_budget
+          ? parseFloat(campaign.daily_budget)
+          : null,
+        lifetime_budget: campaign.lifetime_budget
+          ? parseFloat(campaign.lifetime_budget)
+          : null,
+        budget_remaining: campaign.budget_remaining
+          ? parseFloat(campaign.budget_remaining)
+          : null,
+        spend_cap: campaign.spend_cap ? parseFloat(campaign.spend_cap) : null,
+        start_time: campaign.start_time
+          ? new Date(campaign.start_time).toISOString()
+          : null,
+        end_time: campaign.stop_time
+          ? new Date(campaign.stop_time).toISOString()
+          : null,
+        promoted_object: campaign.promoted_object || null,
+        pacing_type: campaign.pacing_type || null,
+        special_ad_categories: campaign.special_ad_categories || [],
+        source_campaign_id: campaign.source_campaign_id || null,
+        topline_id: campaign.topline_id || null,
+        recommendations: campaign.recommendations || null,
+        // Insights data
+        impressions: safeParseInt(campaignInsights?.impressions),
+        clicks: safeParseInt(campaignInsights?.clicks),
+        reach: safeParseInt(campaignInsights?.reach),
+        spend: safeParseFloat(campaignInsights?.spend),
+        cpc: safeParseFloat(campaignInsights?.cpc),
+        cpm: safeParseFloat(campaignInsights?.cpm),
+        ctr: safeParseFloat(campaignInsights?.ctr),
+        frequency: safeParseFloat(campaignInsights?.frequency),
+        cost_per_unique_click: safeParseFloat(
+          campaignInsights?.cost_per_unique_click
+        ),
+        actions: campaignInsights?.actions || [],
+        action_values: campaignInsights?.action_values || [],
+        cost_per_action_type: campaignInsights?.cost_per_action_type || [],
+        outbound_clicks: campaignInsights?.outbound_clicks || [],
+        outbound_clicks_ctr: safeParseFloat(
+          campaignInsights?.outbound_clicks_ctr?.[0]?.value
+        ),
+        website_ctr: campaignInsights?.website_ctr || [],
+        website_purchase_roas: safeParseFloat(
+          campaignInsights?.website_purchase_roas?.[0]?.value
+        ),
+        last_updated: new Date(),
+        updated_at: new Date(),
+      };
+
+      // Upsert campaign
+      const { error: campaignError } = await supabase
+        .from("meta_campaigns")
+        .upsert([campaignData], {
+          onConflict: "campaign_id",
+          ignoreDuplicates: false,
+        });
+
+      if (campaignError) {
+        console.error(
+          `❌ Error upserting campaign ${campaignId}:`,
+          campaignError
+        );
+      } else {
+        console.log(`✅ Campaign ${campaignId} synced successfully`);
+        processedCount++;
+      }
+
+      await delay(RATE_LIMIT_CONFIG.CAMPAIGN_DELAY);
+    } catch (error) {
+      console.error(`❌ Error syncing campaign ${campaignId}:`, error);
+    }
+  }
+
+  await updateJobStatus(supabase, requestId, "completed", 100);
+  return {
+    phase: "incremental_campaigns",
+    status: "completed",
+    processed: processedCount,
+    total: campaignIds.length,
+  };
+}
+
+// Sync specific adsets
+async function syncSpecificAdsets(
+  accountId: string,
+  supabase: any,
+  timeframe: string,
+  requestId: string,
+  adsetIds: string[],
+  startTime: number
+) {
+  console.log(`📊 Fetching ${adsetIds.length} specific adsets`);
+
+  let processedCount = 0;
+
+  for (const adsetId of adsetIds) {
+    try {
+      // Check time limits
+      if (shouldStopProcessing(startTime, processedCount)) {
+        console.log("⏰ Time limit reached, stopping incremental adset sync");
+        break;
+      }
+
+      console.log(`🔄 Syncing adset: ${adsetId}`);
+
+      // Fetch adset details
+      const adset = await withRateLimitRetry(
+        async () => {
+          return new AdSet(adsetId).read([
+            "name",
+            "status",
+            "configured_status",
+            "effective_status",
+            "campaign_id",
+            "daily_budget",
+            "lifetime_budget",
+            "budget_remaining",
+            "bid_strategy",
+            "billing_event",
+            "optimization_goal",
+            "targeting",
+            "start_time",
+            "end_time",
+            "created_time",
+            "updated_time",
+            "source_adset_id",
+            "promoted_object",
+            "recommendations",
+            "bid_amount",
+            "bid_info",
+            "attribution_spec",
+            "destination_type",
+            "pacing_type",
+          ]);
+        },
+        {
+          accountId,
+          endpoint: "adset_details",
+          callType: "READ",
+          points: RATE_LIMIT_CONFIG.POINTS.READ,
+          supabase,
+        }
+      );
+
+      // Get adset insights
+      const adsetInsights = await getInsights(
+        adset,
+        supabase,
+        accountId,
+        timeframe
+      );
+
+      // Prepare adset data (similar structure as in processAdsetsPhase)
+      const adsetData = {
+        adset_id: adset.id,
+        account_id: accountId,
+        campaign_id: adset.campaign_id,
+        name: adset.name || "",
+        status:
+          mapToValidEffectiveStatus(
+            adset.effective_status,
+            adset.configured_status
+          ) || "UNKNOWN",
+        configured_status: adset.configured_status || null,
+        effective_status: adset.effective_status || null,
+        daily_budget: adset.daily_budget
+          ? parseFloat(adset.daily_budget)
+          : null,
+        lifetime_budget: adset.lifetime_budget
+          ? parseFloat(adset.lifetime_budget)
+          : null,
+        budget_remaining: adset.budget_remaining
+          ? parseFloat(adset.budget_remaining)
+          : null,
+        bid_strategy: adset.bid_strategy || null,
+        billing_event: adset.billing_event || null,
+        optimization_goal: adset.optimization_goal || null,
+        targeting: adset.targeting || null,
+        start_time: adset.start_time
+          ? new Date(adset.start_time).toISOString()
+          : null,
+        end_time: adset.end_time
+          ? new Date(adset.end_time).toISOString()
+          : null,
+        created_time: adset.created_time
+          ? new Date(adset.created_time).toISOString()
+          : null,
+        updated_time: adset.updated_time
+          ? new Date(adset.updated_time).toISOString()
+          : null,
+        source_adset_id: adset.source_adset_id || null,
+        promoted_object: adset.promoted_object || null,
+        recommendations: adset.recommendations || null,
+        bid_amount: adset.bid_amount ? parseFloat(adset.bid_amount) : null,
+        bid_info: adset.bid_info || null,
+        attribution_spec: adset.attribution_spec || null,
+        destination_type: adset.destination_type || null,
+        pacing_type: adset.pacing_type || null,
+        // Insights data
+        impressions: safeParseInt(adsetInsights?.impressions),
+        clicks: safeParseInt(adsetInsights?.clicks),
+        reach: safeParseInt(adsetInsights?.reach),
+        spend: safeParseFloat(adsetInsights?.spend),
+        cpc: safeParseFloat(adsetInsights?.cpc),
+        cpm: safeParseFloat(adsetInsights?.cpm),
+        ctr: safeParseFloat(adsetInsights?.ctr),
+        frequency: safeParseFloat(adsetInsights?.frequency),
+        cost_per_unique_click: safeParseFloat(
+          adsetInsights?.cost_per_unique_click
+        ),
+        actions: adsetInsights?.actions || [],
+        action_values: adsetInsights?.action_values || [],
+        cost_per_action_type: adsetInsights?.cost_per_action_type || [],
+        outbound_clicks: adsetInsights?.outbound_clicks || [],
+        outbound_clicks_ctr: safeParseFloat(
+          adsetInsights?.outbound_clicks_ctr?.[0]?.value
+        ),
+        website_ctr: adsetInsights?.website_ctr || [],
+        website_purchase_roas: safeParseFloat(
+          adsetInsights?.website_purchase_roas?.[0]?.value
+        ),
+        last_updated: new Date(),
+        updated_at: new Date(),
+      };
+
+      // Upsert adset
+      const { error: adsetError } = await supabase
+        .from("meta_adsets")
+        .upsert([adsetData], {
+          onConflict: "adset_id",
+          ignoreDuplicates: false,
+        });
+
+      if (adsetError) {
+        console.error(`❌ Error upserting adset ${adsetId}:`, adsetError);
+      } else {
+        console.log(`✅ Adset ${adsetId} synced successfully`);
+        processedCount++;
+      }
+
+      await delay(RATE_LIMIT_CONFIG.ADSET_DELAY);
+    } catch (error) {
+      console.error(`❌ Error syncing adset ${adsetId}:`, error);
+    }
+  }
+
+  await updateJobStatus(supabase, requestId, "completed", 100);
+  return {
+    phase: "incremental_adsets",
+    status: "completed",
+    processed: processedCount,
+    total: adsetIds.length,
+  };
+}
+
+// Sync specific ads
+async function syncSpecificAds(
+  accountId: string,
+  supabase: any,
+  timeframe: string,
+  requestId: string,
+  adIds: string[],
+  startTime: number
+) {
+  console.log(`📊 Fetching ${adIds.length} specific ads`);
+
+  let processedCount = 0;
+
+  for (const adId of adIds) {
+    try {
+      // Check time limits
+      if (shouldStopProcessing(startTime, processedCount)) {
+        console.log("⏰ Time limit reached, stopping incremental ad sync");
+        break;
+      }
+
+      console.log(`🔄 Syncing ad: ${adId}`);
+
+      // Fetch ad details
+      const ad = await withRateLimitRetry(
+        async () => {
+          return new Ad(adId).read([
+            "name",
+            "status",
+            "configured_status",
+            "effective_status",
+            "adset_id",
+            "campaign_id",
+            "creative",
+            "tracking_specs",
+            "conversion_specs",
+            "tracking_and_conversion_specs",
+            "source_ad_id",
+            "recommendations",
+            "created_time",
+            "updated_time",
+          ]);
+        },
+        {
+          accountId,
+          endpoint: "ad_details",
+          callType: "READ",
+          points: RATE_LIMIT_CONFIG.POINTS.READ,
+          supabase,
+        }
+      );
+
+      // Get ad insights
+      const adInsights = await getInsights(ad, supabase, accountId, timeframe);
+
+      // Process creative data
+      let creativeType = null;
+      let assetFeedSpec = null;
+
+      if (ad.creative) {
+        try {
+          const creativeResult = await fetchCreative(ad.creative.id);
+          if (creativeResult.success && creativeResult.data) {
+            const processedCreative = processCreativeData(
+              creativeResult.data,
+              ad
+            );
+            creativeType = processedCreative.creative_type;
+            assetFeedSpec = processedCreative.asset_feed_spec;
+          }
+        } catch (creativeError) {
+          console.error(
+            `Error fetching creative for ad ${adId}:`,
+            creativeError
+          );
+        }
+      }
+
+      // Prepare ad data (similar structure as in processAdsPhase)
+      const adData = {
+        ad_id: ad.id,
+        ad_set_id: ad.adset_id,
+        account_id: accountId,
+        campaign_id: ad.campaign_id,
+        name: ad.name || "",
+        status: mapToValidEffectiveStatus(
+          ad.status,
+          ad.effective_status,
+          ad.configured_status
+        ),
+        configured_status: ad.configured_status || null,
+        effective_status: ad.effective_status || null,
+        creative: ad.creative || null,
+        creative_id: ad.creative?.id || null,
+        creative_type: creativeType,
+        asset_feed_spec: assetFeedSpec,
+        object_story_spec: ad.creative?.object_story_spec || null,
+        tracking_specs: ad.tracking_specs || null,
+        conversion_specs: ad.conversion_specs || null,
+        tracking_and_conversion_specs: ad.tracking_and_conversion_specs || null,
+        source_ad_id: ad.source_ad_id || null,
+        recommendations: ad.recommendations || null,
+        created_time: ad.created_time
+          ? new Date(ad.created_time).toISOString()
+          : null,
+        updated_time: ad.updated_time
+          ? new Date(ad.updated_time).toISOString()
+          : null,
+        // Insights data
+        impressions: safeParseInt(adInsights?.impressions),
+        clicks: safeParseInt(adInsights?.clicks),
+        reach: safeParseInt(adInsights?.reach),
+        spend: safeParseFloat(adInsights?.spend),
+        cpc: safeParseFloat(adInsights?.cpc),
+        cpm: safeParseFloat(adInsights?.cpm),
+        ctr: safeParseFloat(adInsights?.ctr),
+        frequency: safeParseFloat(adInsights?.frequency),
+        cost_per_unique_click: safeParseFloat(
+          adInsights?.cost_per_unique_click
+        ),
+        actions: adInsights?.actions || [],
+        action_values: adInsights?.action_values || [],
+        cost_per_action_type: adInsights?.cost_per_action_type || [],
+        outbound_clicks: adInsights?.outbound_clicks || [],
+        outbound_clicks_ctr: safeParseFloat(
+          adInsights?.outbound_clicks_ctr?.[0]?.value
+        ),
+        website_ctr: adInsights?.website_ctr || [],
+        website_purchase_roas: safeParseFloat(
+          adInsights?.website_purchase_roas?.[0]?.value
+        ),
+        last_updated: new Date(),
+        updated_at: new Date(),
+      };
+
+      // Upsert ad
+      const { error: adError } = await supabase
+        .from("meta_ads")
+        .upsert([adData], {
+          onConflict: "ad_id",
+          ignoreDuplicates: false,
+        });
+
+      if (adError) {
+        console.error(`❌ Error upserting ad ${adId}:`, adError);
+      } else {
+        console.log(`✅ Ad ${adId} synced successfully`);
+
+        // Save engagement metrics if we have insights
+        if (adInsights && hasValidInsightsData(adInsights)) {
+          const today = new Date().toISOString().split("T")[0];
+          await saveAdEngagementMetrics(supabase, adId, adInsights, today);
+        }
+
+        processedCount++;
+      }
+
+      await delay(RATE_LIMIT_CONFIG.AD_DELAY);
+    } catch (error) {
+      console.error(`❌ Error syncing ad ${adId}:`, error);
+    }
+  }
+
+  await updateJobStatus(supabase, requestId, "completed", 100);
+  return {
+    phase: "incremental_ads",
+    status: "completed",
+    processed: processedCount,
+    total: adIds.length,
+  };
 }
