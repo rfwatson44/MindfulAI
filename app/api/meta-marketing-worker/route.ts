@@ -718,7 +718,37 @@ async function getInsights(
           return weekResult;
         }
 
-        // STRATEGY 4: Try with minimal metrics and shorter range
+        // STRATEGY 4: Try with 30-day timeframe for historical data
+        console.log(`🔄 Trying 30-day fallback for ${entity.id}...`);
+        const monthRange = getLast30DaysDateRange();
+
+        const monthInsights = await entity.getInsights(
+          [
+            "impressions",
+            "clicks",
+            "reach",
+            "spend",
+            "actions",
+            "inline_link_clicks",
+            "inline_post_engagement",
+            "video_30_sec_watched_actions",
+            "video_p25_watched_actions",
+            "video_thruplay_watched_actions",
+            "video_continuous_2_sec_watched_actions",
+          ],
+          {
+            time_range: monthRange,
+            breakdowns: [],
+          }
+        );
+
+        const monthResult = (monthInsights?.[0] as InsightResult) || null;
+        if (monthResult && hasValidInsightsData(monthResult)) {
+          console.log(`✅ Fallback insights (30-day) fetched for ${entity.id}`);
+          return monthResult;
+        }
+
+        // STRATEGY 5: Try with minimal metrics and shorter range
         console.log(`🔄 Trying minimal metrics for ${entity.id}...`);
         const minimalRange = {
           since: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
@@ -2808,6 +2838,20 @@ async function processAdsPhase(
     // All ads processed, mark as completed
     console.log("🎉 ALL ADS PROCESSED - NO MORE ADSETS REMAINING");
     console.log(`Total ads processed in this batch: ${processedAds.length}`);
+
+    // Clean up any empty engagement metrics rows
+    try {
+      const cleanupResult = await cleanupEmptyEngagementMetrics(
+        supabase,
+        requestId
+      );
+      console.log(
+        `🧹 Cleanup completed: ${cleanupResult.deleted} empty rows removed`
+      );
+    } catch (cleanupError) {
+      console.error("⚠️ Cleanup error (non-critical):", cleanupError);
+    }
+
     await updateJobStatus(supabase, requestId, "completed", 100, undefined, {
       message: "All phases completed successfully",
       totalPhases: 4,
@@ -2841,37 +2885,83 @@ async function saveAdEngagementMetrics(
   try {
     console.log(`📊 Processing engagement metrics for ad ${adId}...`);
 
-    // ALWAYS create a record, even if insights are null
+    // Skip saving if no insights data is available
+    if (!insights) {
+      console.log(
+        `⏭️ Skipping engagement metrics for ad ${adId} - no insights data available`
+      );
+      return true; // Return true to indicate successful processing (just no data to save)
+    }
+
+    // Check if we have any meaningful engagement data
+    const hasEngagementData =
+      insights.inline_link_clicks ||
+      insights.inline_post_engagement ||
+      (insights.video_30_sec_watched_actions &&
+        insights.video_30_sec_watched_actions.length > 0) ||
+      (insights.video_p25_watched_actions &&
+        insights.video_p25_watched_actions.length > 0) ||
+      (insights.video_thruplay_watched_actions &&
+        insights.video_thruplay_watched_actions.length > 0) ||
+      (insights.video_continuous_2_sec_watched_actions &&
+        insights.video_continuous_2_sec_watched_actions.length > 0) ||
+      insights.actions?.some((action) =>
+        [
+          "page_engagement",
+          "post_engagement",
+          "comment",
+          "video_view",
+        ].includes(action.action_type)
+      );
+
+    if (!hasEngagementData) {
+      console.log(
+        `⏭️ Skipping engagement metrics for ad ${adId} - no meaningful engagement data found`
+      );
+      return true; // Return true to indicate successful processing (just no meaningful data)
+    }
+
+    // Create engagement data record only when we have meaningful data
     const engagementData = {
       ad_id: adId,
       date: date,
       // Direct metrics from insights
-      inline_link_clicks: insights
+      inline_link_clicks: insights.inline_link_clicks
         ? safeParseInt(insights.inline_link_clicks)
         : null,
-      inline_post_engagement: insights
+      inline_post_engagement: insights.inline_post_engagement
         ? safeParseInt(insights.inline_post_engagement)
         : null,
 
       // Video metrics from specific video action arrays
-      video_30s_watched: insights?.video_30_sec_watched_actions
-        ? safeParseInt(insights.video_30_sec_watched_actions[0]?.value)
-        : null,
-      video_25_percent_watched: insights?.video_p25_watched_actions
-        ? safeParseInt(insights.video_p25_watched_actions[0]?.value)
-        : null,
-      video_50_percent_watched: insights?.video_p50_watched_actions
-        ? safeParseInt(insights.video_p50_watched_actions[0]?.value)
-        : null,
-      video_75_percent_watched: insights?.video_p75_watched_actions
-        ? safeParseInt(insights.video_p75_watched_actions[0]?.value)
-        : null,
-      video_95_percent_watched: insights?.video_p95_watched_actions
-        ? safeParseInt(insights.video_p95_watched_actions[0]?.value)
-        : null,
+      video_30s_watched:
+        insights.video_30_sec_watched_actions &&
+        insights.video_30_sec_watched_actions.length > 0
+          ? safeParseInt(insights.video_30_sec_watched_actions[0]?.value)
+          : null,
+      video_25_percent_watched:
+        insights.video_p25_watched_actions &&
+        insights.video_p25_watched_actions.length > 0
+          ? safeParseInt(insights.video_p25_watched_actions[0]?.value)
+          : null,
+      video_50_percent_watched:
+        insights.video_p50_watched_actions &&
+        insights.video_p50_watched_actions.length > 0
+          ? safeParseInt(insights.video_p50_watched_actions[0]?.value)
+          : null,
+      video_75_percent_watched:
+        insights.video_p75_watched_actions &&
+        insights.video_p75_watched_actions.length > 0
+          ? safeParseInt(insights.video_p75_watched_actions[0]?.value)
+          : null,
+      video_95_percent_watched:
+        insights.video_p95_watched_actions &&
+        insights.video_p95_watched_actions.length > 0
+          ? safeParseInt(insights.video_p95_watched_actions[0]?.value)
+          : null,
 
       // Engagement metrics from actions array
-      page_engagement: insights?.actions?.find(
+      page_engagement: insights.actions?.find(
         (a: any) => a.action_type === "page_engagement"
       )?.value
         ? safeParseInt(
@@ -2880,7 +2970,7 @@ async function saveAdEngagementMetrics(
             )?.value
           )
         : null,
-      post_engagement: insights?.actions?.find(
+      post_engagement: insights.actions?.find(
         (a: any) => a.action_type === "post_engagement"
       )?.value
         ? safeParseInt(
@@ -2889,7 +2979,7 @@ async function saveAdEngagementMetrics(
             )?.value
           )
         : null,
-      post_comments: insights?.actions?.find(
+      post_comments: insights.actions?.find(
         (a: any) => a.action_type === "comment"
       )?.value
         ? safeParseInt(
@@ -2899,12 +2989,14 @@ async function saveAdEngagementMetrics(
         : null,
 
       // Video view metrics
-      two_sec_video_views: insights?.video_continuous_2_sec_watched_actions
-        ? safeParseInt(
-            insights.video_continuous_2_sec_watched_actions[0]?.value
-          )
-        : null,
-      three_sec_video_views: insights?.actions?.find(
+      two_sec_video_views:
+        insights.video_continuous_2_sec_watched_actions &&
+        insights.video_continuous_2_sec_watched_actions.length > 0
+          ? safeParseInt(
+              insights.video_continuous_2_sec_watched_actions[0]?.value
+            )
+          : null,
+      three_sec_video_views: insights.actions?.find(
         (a: any) => a.action_type === "video_view"
       )?.value
         ? safeParseInt(
@@ -2912,12 +3004,14 @@ async function saveAdEngagementMetrics(
               ?.value
           )
         : null,
-      thruplays: insights?.video_thruplay_watched_actions
-        ? safeParseInt(insights.video_thruplay_watched_actions[0]?.value)
-        : null,
+      thruplays:
+        insights.video_thruplay_watched_actions &&
+        insights.video_thruplay_watched_actions.length > 0
+          ? safeParseInt(insights.video_thruplay_watched_actions[0]?.value)
+          : null,
 
       // Cost metrics from cost_per_action_type
-      cost_per_link_click: insights?.cost_per_action_type?.find(
+      cost_per_link_click: insights.cost_per_action_type?.find(
         (c: any) => c.action_type === "link_click"
       )?.value
         ? safeParseFloat(
@@ -2926,7 +3020,7 @@ async function saveAdEngagementMetrics(
             )?.value
           )
         : null,
-      cost_per_post_engagement: insights?.cost_per_action_type?.find(
+      cost_per_post_engagement: insights.cost_per_action_type?.find(
         (c: any) => c.action_type === "post_engagement"
       )?.value
         ? safeParseFloat(
@@ -2935,7 +3029,7 @@ async function saveAdEngagementMetrics(
             )?.value
           )
         : null,
-      cost_per_page_engagement: insights?.cost_per_action_type?.find(
+      cost_per_page_engagement: insights.cost_per_action_type?.find(
         (c: any) => c.action_type === "page_engagement"
       )?.value
         ? safeParseFloat(
@@ -2944,7 +3038,7 @@ async function saveAdEngagementMetrics(
             )?.value
           )
         : null,
-      cost_per_thruplay: insights?.cost_per_action_type?.find(
+      cost_per_thruplay: insights.cost_per_action_type?.find(
         (c: any) => c.action_type === "video_thruplay_watched"
       )?.value
         ? safeParseFloat(
@@ -2953,7 +3047,7 @@ async function saveAdEngagementMetrics(
             )?.value
           )
         : null,
-      cost_per_2sec_view: insights?.cost_per_action_type?.find(
+      cost_per_2sec_view: insights.cost_per_action_type?.find(
         (c: any) => c.action_type === "video_continuous_2_sec_watched"
       )?.value
         ? safeParseFloat(
@@ -2962,7 +3056,7 @@ async function saveAdEngagementMetrics(
             )?.value
           )
         : null,
-      cost_per_3sec_view: insights?.cost_per_action_type?.find(
+      cost_per_3sec_view: insights.cost_per_action_type?.find(
         (c: any) => c.action_type === "video_view"
       )?.value
         ? safeParseFloat(
@@ -2973,20 +3067,25 @@ async function saveAdEngagementMetrics(
         : null,
 
       // Calculated metrics
-      avg_watch_time_seconds: insights?.video_avg_time_watched_actions
-        ? safeParseFloat(insights.video_avg_time_watched_actions[0]?.value)
-        : null,
+      avg_watch_time_seconds:
+        insights.video_avg_time_watched_actions &&
+        insights.video_avg_time_watched_actions.length > 0
+          ? safeParseFloat(insights.video_avg_time_watched_actions[0]?.value)
+          : null,
 
       // VTR and Hook Rate (calculated)
       vtr_percentage:
-        insights?.video_p25_watched_actions && insights?.impressions
+        insights.video_p25_watched_actions &&
+        insights.video_p25_watched_actions.length > 0 &&
+        insights.impressions
           ? (safeParseInt(insights.video_p25_watched_actions[0]?.value) /
               safeParseInt(insights.impressions)) *
             100
           : null,
       hook_rate_percentage:
-        insights?.video_continuous_2_sec_watched_actions &&
-        insights?.impressions
+        insights.video_continuous_2_sec_watched_actions &&
+        insights.video_continuous_2_sec_watched_actions.length > 0 &&
+        insights.impressions
           ? (safeParseInt(
               insights.video_continuous_2_sec_watched_actions[0]?.value
             ) /
@@ -3000,10 +3099,12 @@ async function saveAdEngagementMetrics(
     };
 
     console.log(`📊 Engagement data prepared for ad ${adId}:`, {
-      insights_available: insights ? true : false,
+      insights_available: true,
       inline_link_clicks: engagementData.inline_link_clicks,
       video_30s_watched: engagementData.video_30s_watched,
       thruplays: engagementData.thruplays,
+      page_engagement: engagementData.page_engagement,
+      post_engagement: engagementData.post_engagement,
     });
 
     const { error: metricsError } = await supabase
@@ -3021,9 +3122,7 @@ async function saveAdEngagementMetrics(
       return false;
     } else {
       console.log(
-        `✅ Saved engagement metrics for ad ${adId} (insights: ${
-          insights ? "available" : "null"
-        })`
+        `✅ Saved engagement metrics for ad ${adId} with meaningful data`
       );
       return true;
     }
@@ -3180,78 +3279,94 @@ async function fixZeroSpendImpressions(
   }
 }
 
+async function cleanupEmptyEngagementMetrics(
+  supabase: any,
+  requestId: string
+): Promise<{ deleted: number; errors: string[] }> {
+  try {
+    console.log("🧹 Cleaning up empty engagement metrics rows...");
+
+    // Delete rows where all engagement metrics are null
+    const { data: deletedRows, error } = await supabase
+      .from("ad_engagement_metrics")
+      .delete()
+      .is("inline_link_clicks", null)
+      .is("inline_post_engagement", null)
+      .is("video_30s_watched", null)
+      .is("video_25_percent_watched", null)
+      .is("video_50_percent_watched", null)
+      .is("video_75_percent_watched", null)
+      .is("video_95_percent_watched", null)
+      .is("page_engagement", null)
+      .is("post_engagement", null)
+      .is("post_comments", null)
+      .is("two_sec_video_views", null)
+      .is("three_sec_video_views", null)
+      .is("thruplays", null)
+      .select("ad_id");
+
+    if (error) {
+      console.error("❌ Error cleaning up empty engagement metrics:", error);
+      return { deleted: 0, errors: [error.message] };
+    }
+
+    const deletedCount = deletedRows?.length || 0;
+    console.log(`✅ Cleaned up ${deletedCount} empty engagement metrics rows`);
+
+    return { deleted: deletedCount, errors: [] };
+  } catch (error) {
+    console.error("❌ Error in cleanup function:", error);
+    return {
+      deleted: 0,
+      errors: [
+        error instanceof Error ? error.message : "Unknown cleanup error",
+      ],
+    };
+  }
+}
+
 // Export the POST handler with QStash signature verification
 export const POST = verifySignatureAppRouter(handler);
 
 // NEW: GET endpoint to fix zero spend/impressions issues
 export async function GET(request: Request) {
-  const supabase = await createClient();
-  const { searchParams } = new URL(request.url);
-  const accountId = searchParams.get("accountId");
-  const action = searchParams.get("action");
+  try {
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get("action");
 
-  if (!accountId) {
-    return NextResponse.json(
-      { error: "accountId parameter is required" },
-      { status: 400 }
-    );
-  }
+    if (action === "cleanup-engagement-metrics") {
+      // Manual cleanup of empty engagement metrics
+      const supabase = await createClient();
 
-  if (action === "fix-zero-data") {
-    try {
-      console.log(`🔧 Manual fix requested for account ${accountId}`);
-
-      const requestId = `fix-zero-${accountId}-${Date.now()}`;
-      const result = await fixZeroSpendImpressions(
-        accountId,
+      const cleanupResult = await cleanupEmptyEngagementMetrics(
         supabase,
-        requestId
+        "manual-cleanup"
       );
 
       return NextResponse.json({
         success: true,
-        message: `Fixed ${result.fixed} out of ${result.total} ads with zero data`,
-        details: {
-          fixed: result.fixed,
-          total: result.total,
-          errors: result.errors,
-        },
+        message: "Cleanup completed",
+        deleted: cleanupResult.deleted,
+        errors: cleanupResult.errors,
       });
-    } catch (error: any) {
-      console.error("Error fixing zero data:", error);
-      return NextResponse.json(
-        { error: `Failed to fix zero data: ${error.message}` },
-        { status: 500 }
-      );
-    }
-  }
-
-  // Default: Return account status and zero data count
-  try {
-    const { data: zeroAds, error } = await supabase
-      .from("meta_ads")
-      .select("ad_id, name, impressions, spend")
-      .eq("account_id", accountId)
-      .eq("spend", 0)
-      .eq("impressions", 0);
-
-    if (error) {
-      throw error;
     }
 
+    // Default response for other GET requests
     return NextResponse.json({
-      accountId,
-      zeroDataAds: zeroAds?.length || 0,
-      ads: zeroAds || [],
-      message: `Found ${
-        zeroAds?.length || 0
-      } ads with zero spend and impressions`,
-      fixUrl: `/api/meta-marketing-worker?accountId=${accountId}&action=fix-zero-data`,
+      message: "Meta Marketing Worker API",
+      endpoints: {
+        "POST /": "Process Meta Marketing data with QStash",
+        "GET /?action=cleanup-engagement-metrics":
+          "Clean up empty engagement metrics rows",
+      },
     });
-  } catch (error: any) {
-    console.error("Error checking zero data:", error);
+  } catch (error) {
+    console.error("❌ GET request error:", error);
     return NextResponse.json(
-      { error: `Failed to check zero data: ${error.message}` },
+      {
+        error: "Internal server error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      },
       { status: 500 }
     );
   }
