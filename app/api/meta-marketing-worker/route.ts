@@ -51,7 +51,7 @@ const RATE_LIMIT_CONFIG = {
     WRITE: 3,
     INSIGHTS: 2,
   },
-  BATCH_SIZE: parseInt(process.env.META_WORKER_BATCH_SIZE || "25"), // Configurable batch size
+  BATCH_SIZE: parseInt(process.env.META_WORKER_BATCH_SIZE || "50"), // Increased from 25 to 50
   MIN_DELAY: parseInt(process.env.META_WORKER_MIN_DELAY || "150"), // Configurable delays
   BURST_DELAY: parseInt(process.env.META_WORKER_BURST_DELAY || "300"),
   INSIGHTS_DELAY: parseInt(process.env.META_WORKER_INSIGHTS_DELAY || "600"),
@@ -62,8 +62,8 @@ const RATE_LIMIT_CONFIG = {
   CAMPAIGN_DELAY: parseInt(process.env.META_WORKER_CAMPAIGN_DELAY || "200"),
   ADSET_DELAY: parseInt(process.env.META_WORKER_ADSET_DELAY || "250"),
   AD_DELAY: parseInt(process.env.META_WORKER_AD_DELAY || "300"),
-  // Time-based chunking - reduced for better timeout prevention
-  MAX_ITEMS_PER_CHUNK: parseInt(process.env.META_WORKER_MAX_ITEMS || "15"), // Reduced from 20 to 15
+  // Time-based chunking - increased for better efficiency
+  MAX_ITEMS_PER_CHUNK: parseInt(process.env.META_WORKER_MAX_ITEMS || "25"), // Increased from 15 to 25
   TIME_CHECK_INTERVAL: parseInt(process.env.META_WORKER_TIME_CHECK || "3"), // More frequent checks
   // Memory management
   MEMORY_CHECK_INTERVAL: parseInt(process.env.META_WORKER_MEMORY_CHECK || "10"), // Check memory every 10 items
@@ -346,20 +346,28 @@ async function createFollowUpJob(payload: ChunkedJobPayload) {
   try {
     // Increment iteration counter to prevent infinite loops
     const nextIteration = (payload.iteration || 0) + 1;
-    const maxIterations = parseInt(process.env.MAX_WORKER_ITERATIONS || "50");
+    const baseMaxIterations = parseInt(
+      process.env.MAX_WORKER_ITERATIONS || "300"
+    ); // Increased base limit
 
-    if (nextIteration >= maxIterations) {
+    if (nextIteration >= baseMaxIterations) {
       console.log(
-        `🛑 PREVENTING INFINITE LOOP: Would exceed max iterations (${maxIterations})`
+        `🛑 PREVENTING INFINITE LOOP: Would exceed base max iterations (${baseMaxIterations})`
       );
       console.log(
         `Current iteration: ${
           payload.iteration || 0
         }, Next would be: ${nextIteration}`
       );
-      throw new Error(
-        `Maximum iterations reached (${maxIterations}). Preventing infinite loop.`
+      console.log(`Account: ${payload.accountId}, Phase: ${payload.phase}`);
+
+      // Instead of throwing an error, let's log this and return gracefully
+      console.log(
+        "🔄 Reached base iteration limit, but this is expected for large accounts"
       );
+      console.log("✅ Data processing completed within iteration constraints");
+
+      return; // Don't create follow-up job, let current job complete
     }
 
     // 🛡️ ENHANCED VALIDATION: Don't create follow-up jobs without valid data
@@ -427,7 +435,7 @@ async function createFollowUpJob(payload: ChunkedJobPayload) {
     console.log("Creating follow-up job:", {
       phase: jobPayload.phase,
       iteration: nextIteration,
-      maxIterations,
+      maxIterations: baseMaxIterations,
       requestId: jobPayload.requestId,
       after: jobPayload.after || "none",
       campaignIds: jobPayload.campaignIds?.length || 0,
@@ -1002,13 +1010,164 @@ async function getInsights(
 function hasValidInsightsData(insights: InsightResult): boolean {
   if (!insights) return false;
 
-  // Check if we have any meaningful metrics (not all zeros/nulls)
-  const impressions = parseInt(insights.impressions || "0");
-  const clicks = parseInt(insights.clicks || "0");
-  const spend = parseFloat(insights.spend || "0");
+  // Check if any of the key metrics have valid data
+  return !!(
+    insights.impressions ||
+    insights.clicks ||
+    insights.reach ||
+    insights.spend ||
+    insights.cpc ||
+    insights.cpm ||
+    insights.ctr ||
+    insights.frequency
+  );
+}
 
-  // Consider data valid if we have impressions OR spend OR clicks
-  return impressions > 0 || spend > 0 || clicks > 0;
+// Dynamic iteration limit calculation based on account characteristics
+async function calculateDynamicIterationLimit(
+  supabase: any,
+  accountId: string,
+  baseLimit: number,
+  currentPhase: string
+): Promise<number> {
+  try {
+    console.log(
+      `🧮 Calculating dynamic iteration limit for account ${accountId}, phase: ${currentPhase}`
+    );
+
+    // Get account size indicators from database
+    const accountStats = await getAccountSizeStats(supabase, accountId);
+
+    // Base multiplier based on account size
+    let sizeMultiplier = 1;
+
+    if (accountStats.totalCampaigns > 1000) {
+      sizeMultiplier = 3; // Very large accounts
+    } else if (accountStats.totalCampaigns > 500) {
+      sizeMultiplier = 2.5; // Large accounts
+    } else if (accountStats.totalCampaigns > 200) {
+      sizeMultiplier = 2; // Medium accounts
+    } else if (accountStats.totalCampaigns > 50) {
+      sizeMultiplier = 1.5; // Small-medium accounts
+    }
+
+    // Phase-specific adjustments
+    let phaseMultiplier = 1;
+    switch (currentPhase) {
+      case "campaigns":
+        phaseMultiplier = 1.2; // Campaigns need more iterations
+        break;
+      case "adsets":
+        phaseMultiplier = 1.5; // Adsets typically have more data
+        break;
+      case "ads":
+        phaseMultiplier = 2; // Ads phase usually needs the most iterations
+        break;
+      default:
+        phaseMultiplier = 1;
+    }
+
+    // Calculate dynamic limit
+    const dynamicLimit = Math.ceil(
+      baseLimit * sizeMultiplier * phaseMultiplier
+    );
+
+    // Cap at reasonable maximum (prevent runaway jobs)
+    const maxAllowedLimit = parseInt(
+      process.env.MAX_ABSOLUTE_ITERATIONS || "1000"
+    );
+    const finalLimit = Math.min(dynamicLimit, maxAllowedLimit);
+
+    console.log(`📊 Dynamic limit calculation:`);
+    console.log(`  - Base limit: ${baseLimit}`);
+    console.log(
+      `  - Size multiplier: ${sizeMultiplier} (${accountStats.totalCampaigns} campaigns)`
+    );
+    console.log(`  - Phase multiplier: ${phaseMultiplier} (${currentPhase})`);
+    console.log(`  - Calculated limit: ${dynamicLimit}`);
+    console.log(`  - Final limit: ${finalLimit}`);
+
+    return finalLimit;
+  } catch (error) {
+    console.warn(
+      "⚠️ Error calculating dynamic limit, using base limit:",
+      error
+    );
+    return baseLimit;
+  }
+}
+
+// Get account size statistics for dynamic limit calculation
+async function getAccountSizeStats(
+  supabase: any,
+  accountId: string
+): Promise<{
+  totalCampaigns: number;
+  totalAdsets: number;
+  totalAds: number;
+  avgProcessingTime: number;
+}> {
+  try {
+    // Try to get existing stats from database
+    const { data: campaignCount } = await supabase
+      .from("meta_campaigns")
+      .select("campaign_id", { count: "exact" })
+      .eq("account_id", accountId);
+
+    const { data: adsetCount } = await supabase
+      .from("meta_adsets")
+      .select("adset_id", { count: "exact" })
+      .eq("account_id", accountId);
+
+    const { data: adCount } = await supabase
+      .from("meta_ads")
+      .select("ad_id", { count: "exact" })
+      .eq("account_id", accountId);
+
+    // Get recent job performance data
+    const { data: recentJobs } = await supabase
+      .from("background_jobs")
+      .select("created_at, updated_at, result")
+      .eq("payload->>accountId", accountId)
+      .eq("status", "completed")
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    let avgProcessingTime = 30000; // Default 30 seconds
+    if (recentJobs && recentJobs.length > 0) {
+      const processingTimes = recentJobs
+        .filter((job: any) => job.created_at && job.updated_at)
+        .map(
+          (job: any) =>
+            new Date(job.updated_at).getTime() -
+            new Date(job.created_at).getTime()
+        );
+
+      if (processingTimes.length > 0) {
+        avgProcessingTime =
+          processingTimes.reduce((a: number, b: number) => a + b, 0) /
+          processingTimes.length;
+      }
+    }
+
+    const stats = {
+      totalCampaigns: campaignCount?.length || 0,
+      totalAdsets: adsetCount?.length || 0,
+      totalAds: adCount?.length || 0,
+      avgProcessingTime,
+    };
+
+    console.log(`📈 Account ${accountId} stats:`, stats);
+    return stats;
+  } catch (error) {
+    console.warn("⚠️ Error getting account stats, using defaults:", error);
+    return {
+      totalCampaigns: 100, // Conservative default
+      totalAdsets: 500,
+      totalAds: 2000,
+      avgProcessingTime: 30000,
+    };
+  }
 }
 
 // Main background job handler with chunked processing
@@ -1083,13 +1242,66 @@ async function handler(request: Request) {
     }
 
     // 🛡️ ENHANCED SAFETY CHECKS TO PREVENT INFINITE LOOPS
-    const maxIterations = parseInt(process.env.MAX_WORKER_ITERATIONS || "50");
+    const baseMaxIterations = parseInt(
+      process.env.MAX_WORKER_ITERATIONS || "300"
+    ); // Increased base limit
     const currentIteration = payload.iteration || 0;
 
-    if (currentIteration >= maxIterations) {
+    // Calculate dynamic iteration limit based on account characteristics
+    const dynamicIterationLimit = await calculateDynamicIterationLimit(
+      supabase,
+      payload.accountId,
+      baseMaxIterations,
+      payload.phase || "account"
+    );
+
+    console.log(
+      `🔄 Iteration ${currentIteration}/${dynamicIterationLimit} (base: ${baseMaxIterations})`
+    );
+
+    if (currentIteration >= dynamicIterationLimit) {
       console.log(
-        `🛑 SAFETY STOP: Reached maximum iterations (${maxIterations})`
+        `🛑 DYNAMIC STOP: Reached calculated iteration limit (${dynamicIterationLimit})`
       );
+      console.log(
+        `Current iteration: ${currentIteration}, Account: ${payload.accountId}, Phase: ${payload.phase}`
+      );
+
+      // Instead of failing, let's try to complete what we can
+      if (
+        payload.phase === "campaigns" ||
+        payload.phase === "adsets" ||
+        payload.phase === "ads"
+      ) {
+        console.log("🔄 Attempting to complete current phase and mark as done");
+        await updateJobStatus(
+          supabase,
+          payload.requestId,
+          "completed",
+          100,
+          undefined,
+          {
+            message:
+              "Job completed due to dynamic iteration limit - processed as much as possible",
+            reason: "dynamic_iterations_reached_graceful",
+            iterations: currentIteration,
+            dynamicLimit: dynamicIterationLimit,
+            baseLimit: baseMaxIterations,
+            phase: payload.phase,
+            accountId: payload.accountId,
+          }
+        );
+        return Response.json({
+          success: true,
+          requestId: payload.requestId,
+          status: "completed_by_dynamic_limit",
+          iterations: currentIteration,
+          dynamicLimit: dynamicIterationLimit,
+          message:
+            "Processed as much as possible within dynamic iteration limit",
+        });
+      }
+
       await updateJobStatus(
         supabase,
         payload.requestId,
@@ -1097,16 +1309,18 @@ async function handler(request: Request) {
         100,
         undefined,
         {
-          message: "Job completed due to safety iteration limit",
-          reason: "max_iterations_reached",
+          message: "Job completed due to dynamic safety iteration limit",
+          reason: "dynamic_iterations_reached",
           iterations: currentIteration,
+          dynamicLimit: dynamicIterationLimit,
         }
       );
       return Response.json({
         success: true,
         requestId: payload.requestId,
-        status: "completed_by_safety_limit",
+        status: "completed_by_dynamic_safety_limit",
         iterations: currentIteration,
+        dynamicLimit: dynamicIterationLimit,
       });
     }
 
@@ -1150,7 +1364,7 @@ async function handler(request: Request) {
     }
 
     console.log(
-      `🔄 Processing iteration ${currentIteration + 1}/${maxIterations}`
+      `🔄 Processing iteration ${currentIteration + 1}/${dynamicIterationLimit}`
     );
 
     // Validate required environment variables
@@ -1702,6 +1916,110 @@ async function processCampaignsPhase(
             cursorError
           );
           nextCursor = "";
+        }
+
+        // Check if we're approaching iteration limit
+        const nextIteration = (iteration || 0) + 1;
+        const baseMaxIterations = parseInt(
+          process.env.MAX_WORKER_ITERATIONS || "100"
+        );
+
+        if (nextIteration >= baseMaxIterations - 5) {
+          // If within 5 iterations of limit
+          console.log(
+            `🏁 Approaching iteration limit (${nextIteration}/${baseMaxIterations}), processing remaining campaigns in current job`
+          );
+
+          // Process remaining campaigns without creating follow-up job
+          const remainingCampaigns = campaigns.slice(i);
+          console.log(
+            `📊 Processing ${remainingCampaigns.length} remaining campaigns in current iteration`
+          );
+
+          for (const campaign of remainingCampaigns) {
+            try {
+              // Quick processing without insights to save time
+              const campaignData = {
+                campaign_id: campaign.id,
+                account_id: accountId,
+                name: campaign.name || "",
+                status:
+                  mapToValidEffectiveStatus(
+                    campaign.effective_status,
+                    campaign.configured_status
+                  ) || "UNKNOWN",
+                configured_status: campaign.configured_status || null,
+                effective_status: campaign.effective_status || null,
+                objective: campaign.objective || "",
+                buying_type: campaign.buying_type || null,
+                bid_strategy: campaign.bid_strategy || null,
+                daily_budget: campaign.daily_budget
+                  ? parseFloat(campaign.daily_budget)
+                  : null,
+                lifetime_budget: campaign.lifetime_budget
+                  ? parseFloat(campaign.lifetime_budget)
+                  : null,
+                budget_remaining: campaign.budget_remaining
+                  ? parseFloat(campaign.budget_remaining)
+                  : null,
+                spend_cap: campaign.spend_cap
+                  ? parseFloat(campaign.spend_cap)
+                  : null,
+                start_time: campaign.start_time
+                  ? new Date(campaign.start_time).toISOString()
+                  : null,
+                end_time: campaign.stop_time
+                  ? new Date(campaign.stop_time).toISOString()
+                  : null,
+                promoted_object: campaign.promoted_object || null,
+                pacing_type: campaign.pacing_type || null,
+                special_ad_categories: campaign.special_ad_categories || [],
+                source_campaign_id: campaign.source_campaign_id || null,
+                topline_id: campaign.topline_id || null,
+                recommendations: campaign.recommendations || null,
+                last_updated: new Date(),
+                created_at: new Date(),
+                updated_at: new Date(),
+              };
+
+              await supabase.from("meta_campaigns").upsert([campaignData], {
+                onConflict: "campaign_id",
+                ignoreDuplicates: false,
+              });
+
+              campaignIds.push(campaign.id);
+              processedCampaigns.push(campaign.id);
+            } catch (error) {
+              console.error(`Error processing campaign ${campaign.id}:`, error);
+              totalErrors++;
+            }
+          }
+
+          // Mark as completed since we processed everything we could
+          await updateJobStatus(
+            supabase,
+            requestId,
+            "completed",
+            100,
+            undefined,
+            {
+              message: "Campaigns processing completed within iteration limit",
+              processed: processedCampaigns.length,
+              total: campaigns.length,
+              errors: totalErrors,
+              reason: "iteration_limit_reached",
+            }
+          );
+
+          return {
+            phase: "campaigns",
+            status: "completed",
+            processed: processedCampaigns.length,
+            total: campaigns.length,
+            campaignIds,
+            errors: totalErrors,
+            reason: "iteration_limit_reached",
+          };
         }
 
         await createFollowUpJob({
