@@ -55,16 +55,74 @@ const RATE_LIMIT_CONFIG = {
   MIN_DELAY: parseInt(process.env.META_WORKER_MIN_DELAY || "150"), // Configurable delays
   BURST_DELAY: parseInt(process.env.META_WORKER_BURST_DELAY || "300"),
   INSIGHTS_DELAY: parseInt(process.env.META_WORKER_INSIGHTS_DELAY || "600"),
-  MAX_PROCESSING_TIME: parseInt(process.env.META_WORKER_MAX_TIME || "60000"), // Configurable max time
-  SAFETY_BUFFER: parseInt(process.env.META_WORKER_SAFETY_BUFFER || "8000"), // Configurable safety buffer
+  // Reduced max processing time to prevent Vercel timeouts
+  MAX_PROCESSING_TIME: parseInt(process.env.META_WORKER_MAX_TIME || "45000"), // Reduced from 60s to 45s
+  SAFETY_BUFFER: parseInt(process.env.META_WORKER_SAFETY_BUFFER || "10000"), // Increased safety buffer
   // Enhanced time management
   CAMPAIGN_DELAY: parseInt(process.env.META_WORKER_CAMPAIGN_DELAY || "200"),
   ADSET_DELAY: parseInt(process.env.META_WORKER_ADSET_DELAY || "250"),
   AD_DELAY: parseInt(process.env.META_WORKER_AD_DELAY || "300"),
-  // Time-based chunking
-  MAX_ITEMS_PER_CHUNK: parseInt(process.env.META_WORKER_MAX_ITEMS || "20"), // Configurable chunk size
-  TIME_CHECK_INTERVAL: parseInt(process.env.META_WORKER_TIME_CHECK || "5"), // Configurable check interval
+  // Time-based chunking - reduced for better timeout prevention
+  MAX_ITEMS_PER_CHUNK: parseInt(process.env.META_WORKER_MAX_ITEMS || "15"), // Reduced from 20 to 15
+  TIME_CHECK_INTERVAL: parseInt(process.env.META_WORKER_TIME_CHECK || "3"), // More frequent checks
+  // Memory management
+  MEMORY_CHECK_INTERVAL: parseInt(process.env.META_WORKER_MEMORY_CHECK || "10"), // Check memory every 10 items
+  MAX_MEMORY_USAGE: parseInt(process.env.META_WORKER_MAX_MEMORY || "400"), // 400MB limit
 };
+
+// Simple circuit breaker for Meta API calls
+class CircuitBreaker {
+  private failures = 0;
+  private lastFailureTime = 0;
+  private readonly threshold = 5; // Number of failures before opening circuit
+  private readonly timeout = 60000; // 1 minute timeout
+
+  async execute<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.isOpen()) {
+      throw new Error("Circuit breaker is open - Meta API appears to be down");
+    }
+
+    try {
+      const result = await operation();
+      this.onSuccess();
+      return result;
+    } catch (error) {
+      this.onFailure();
+      throw error;
+    }
+  }
+
+  private isOpen(): boolean {
+    return (
+      this.failures >= this.threshold &&
+      Date.now() - this.lastFailureTime < this.timeout
+    );
+  }
+
+  private onSuccess(): void {
+    this.failures = 0;
+    this.lastFailureTime = 0;
+  }
+
+  private onFailure(): void {
+    this.failures++;
+    this.lastFailureTime = Date.now();
+    console.log(
+      `🔥 Circuit breaker failure count: ${this.failures}/${this.threshold}`
+    );
+  }
+
+  getStatus(): { isOpen: boolean; failures: number; lastFailureTime: number } {
+    return {
+      isOpen: this.isOpen(),
+      failures: this.failures,
+      lastFailureTime: this.lastFailureTime,
+    };
+  }
+}
+
+// Global circuit breaker instance
+const metaApiCircuitBreaker = new CircuitBreaker();
 
 // Meta API configuration
 const META_CONFIG = {
@@ -73,6 +131,45 @@ const META_CONFIG = {
 
 // Helper function to delay execution
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Memory monitoring helper
+function getMemoryUsage(): { used: number; total: number; percentage: number } {
+  if (typeof process !== "undefined" && process.memoryUsage) {
+    const usage = process.memoryUsage();
+    const usedMB = Math.round(usage.heapUsed / 1024 / 1024);
+    const totalMB = Math.round(usage.heapTotal / 1024 / 1024);
+    const percentage = Math.round((usedMB / totalMB) * 100);
+
+    return { used: usedMB, total: totalMB, percentage };
+  }
+  return { used: 0, total: 0, percentage: 0 };
+}
+
+// Check if memory usage is too high
+function shouldStopForMemory(): boolean {
+  const memory = getMemoryUsage();
+  const isHighMemory = memory.used > RATE_LIMIT_CONFIG.MAX_MEMORY_USAGE;
+
+  if (isHighMemory) {
+    console.log(
+      `🧠 High memory usage detected: ${memory.used}MB (${memory.percentage}%)`
+    );
+  }
+
+  return isHighMemory;
+}
+
+// Force garbage collection if available
+function forceGarbageCollection(): void {
+  try {
+    if (global.gc) {
+      global.gc();
+      console.log("🗑️ Forced garbage collection");
+    }
+  } catch (error) {
+    // Ignore errors if gc is not available
+  }
+}
 
 // Time management helper - More aggressive timeout prevention
 function shouldCreateFollowUpJob(startTime: number): boolean {
@@ -123,6 +220,12 @@ function shouldStopProcessing(
     console.log(
       `🛑 Stopping processing: Item limit reached (${itemsProcessed} >= ${RATE_LIMIT_CONFIG.MAX_ITEMS_PER_CHUNK})`
     );
+    return true;
+  }
+
+  // Stop if memory usage is too high
+  if (shouldStopForMemory()) {
+    console.log("🛑 Stopping processing: High memory usage detected");
     return true;
   }
 
@@ -524,66 +627,125 @@ async function withRateLimitRetry<T>(
     supabase: any;
   }
 ): Promise<T> {
-  let retries = 0;
-  const maxRetries = 8; // Increased from 5 to 8 for better resilience
+  const maxRetries = 3;
+  let lastError: any;
 
-  while (true) {
+  // Check circuit breaker status
+  const circuitStatus = metaApiCircuitBreaker.getStatus();
+  if (circuitStatus.isOpen) {
+    console.log("🔥 Circuit breaker is open, skipping Meta API call");
+    throw new Error(
+      `Circuit breaker is open - Meta API appears to be down. Failures: ${circuitStatus.failures}`
+    );
+  }
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      await delay(RATE_LIMIT_CONFIG.MIN_DELAY);
-      const result = await operation();
-      return result;
-    } catch (error: any) {
-      const errorCode = error?.response?.error?.code;
-      const errorSubcode = error?.response?.error?.error_subcode;
-      const isRateLimit = [17, 80000, 80003, 80004, 4, 613].includes(
-        errorCode || 0
+      console.log(
+        `🔄 Attempt ${attempt}/${maxRetries} for ${context.endpoint} (${context.callType})`
       );
 
-      // Special handling for "User request limit reached" error
-      const isUserRequestLimit = errorCode === 17 && errorSubcode === 2446079;
+      // Execute operation through circuit breaker
+      const result = await metaApiCircuitBreaker.execute(operation);
 
-      if ((isRateLimit || isUserRequestLimit) && retries < maxRetries) {
-        let backoffDelay;
+      // Log successful operation
+      console.log(`✅ ${context.endpoint} ${context.callType} successful`);
 
-        if (isUserRequestLimit) {
-          // More aggressive backoff for "User request limit reached"
-          // Start with 30 seconds and exponentially increase up to 5 minutes
-          backoffDelay = Math.min(30000 * Math.pow(2, retries), 300000);
-          console.log(
-            `🚨 Facebook API User Request Limit Reached (Error 17-2446079). Waiting ${
-              backoffDelay / 1000
-            }s before retry ${retries + 1}/${maxRetries}...`
-          );
-        } else {
-          // Standard rate limit backoff
-          backoffDelay = Math.min(1000 * Math.pow(2, retries), 30000);
-          console.log(
-            `⏳ Rate limit hit (Error ${errorCode}). Waiting ${backoffDelay}ms before retry ${
-              retries + 1
-            }/${maxRetries}...`
-          );
+      return result;
+    } catch (error: any) {
+      lastError = error;
+      console.error(
+        `❌ Attempt ${attempt}/${maxRetries} failed for ${context.endpoint}:`,
+        error.message
+      );
+
+      // If circuit breaker is open, don't retry
+      if (error.message?.includes("Circuit breaker is open")) {
+        throw error;
+      }
+
+      // Handle specific Meta API errors
+      if (error.code) {
+        switch (error.code) {
+          case 1: // API Unknown error
+            console.log("🔄 API Unknown error, retrying...");
+            break;
+          case 2: // API Service error
+            console.log("🔄 API Service error, retrying...");
+            break;
+          case 4: // API Too Many Calls
+            console.log("⏳ Rate limit hit, waiting before retry...");
+            await delay(RATE_LIMIT_CONFIG.MIN_DELAY * 2);
+            break;
+          case 17: // User request limit reached
+            console.log("⏳ User request limit reached, waiting...");
+            await delay(RATE_LIMIT_CONFIG.MIN_DELAY * 3);
+            break;
+          case 80004: // There have been too many calls to this ad-account
+            console.log("⏳ Account rate limit hit, waiting longer...");
+            await delay(RATE_LIMIT_CONFIG.MIN_DELAY * 5);
+            break;
+          case 190: // Invalid OAuth 2.0 Access Token
+            console.error("🚨 Invalid access token - this is a critical error");
+            throw error; // Don't retry for auth errors
+          case 100: // Invalid parameter
+            console.error("🚨 Invalid parameter - this is a critical error");
+            throw error; // Don't retry for parameter errors
+          default:
+            console.log(`🔄 Unknown error code ${error.code}, retrying...`);
+        }
+      }
+
+      // Handle network/timeout errors
+      if (
+        error.message?.includes("timeout") ||
+        error.message?.includes("ETIMEDOUT")
+      ) {
+        console.log("⏳ Timeout error, waiting before retry...");
+        await delay(RATE_LIMIT_CONFIG.MIN_DELAY * 2);
+      }
+
+      // Handle connection errors
+      if (
+        error.message?.includes("ECONNRESET") ||
+        error.message?.includes("ENOTFOUND")
+      ) {
+        console.log("🌐 Connection error, waiting before retry...");
+        await delay(RATE_LIMIT_CONFIG.MIN_DELAY * 2);
+      }
+
+      // If this is the last attempt, throw the error
+      if (attempt === maxRetries) {
+        console.error(
+          `💥 All ${maxRetries} attempts failed for ${context.endpoint}`
+        );
+
+        // Log the error to Supabase for monitoring
+        try {
+          await context.supabase.from("api_errors").insert({
+            account_id: context.accountId,
+            endpoint: context.endpoint,
+            error_code: error.code || null,
+            error_message: error.message || "Unknown error",
+            call_type: context.callType,
+            attempts: maxRetries,
+            timestamp: new Date().toISOString(),
+          });
+        } catch (logError) {
+          console.error("Failed to log error to database:", logError);
         }
 
-        await delay(backoffDelay);
-        retries++;
-        continue;
+        throw error;
       }
 
-      // If it's a rate limit error but we've exhausted retries, log it clearly
-      if (isRateLimit || isUserRequestLimit) {
-        console.error(
-          `❌ Rate limit error after ${maxRetries} retries. Error code: ${errorCode}, subcode: ${errorSubcode}`
-        );
-        console.error(
-          `❌ Error message: ${
-            error?.response?.error?.message || error.message
-          }`
-        );
-      }
-
-      throw error;
+      // Wait before next attempt (exponential backoff)
+      const waitTime = RATE_LIMIT_CONFIG.MIN_DELAY * Math.pow(2, attempt - 1);
+      console.log(`⏳ Waiting ${waitTime}ms before attempt ${attempt + 1}...`);
+      await delay(waitTime);
     }
   }
+
+  throw lastError;
 }
 
 // Get insights helper with improved error handling and fallback strategies for zero data issues
@@ -875,6 +1037,15 @@ async function handler(request: Request) {
   const startTime = Date.now();
   let payload: ChunkedJobPayload | null = null;
 
+  // Set up timeout handler to prevent Vercel timeouts
+  const timeoutHandler = setTimeout(() => {
+    console.log(
+      "⚠️ TIMEOUT WARNING: Function approaching Vercel timeout limit"
+    );
+    // Force garbage collection before timeout
+    forceGarbageCollection();
+  }, RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME - 5000); // 5 seconds before our limit
+
   try {
     // 🚨 EMERGENCY DISABLE SWITCH
     if (process.env.WORKER_DISABLED === "true") {
@@ -896,6 +1067,12 @@ async function handler(request: Request) {
       "x-request-id": request.headers.get("x-request-id"),
       "user-agent": request.headers.get("user-agent"),
     });
+
+    // Log initial memory usage
+    const initialMemory = getMemoryUsage();
+    console.log(
+      `🧠 Initial memory usage: ${initialMemory.used}MB (${initialMemory.percentage}%)`
+    );
 
     payload = await request.json();
     console.log("Background job started with payload:", payload);
@@ -980,6 +1157,17 @@ async function handler(request: Request) {
     if (!process.env.META_ACCESS_TOKEN) {
       throw new Error("META_ACCESS_TOKEN environment variable is not set");
     }
+
+    // Log configuration for debugging
+    console.log("🔧 Worker Configuration:", {
+      maxProcessingTime: RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME,
+      safetyBuffer: RATE_LIMIT_CONFIG.SAFETY_BUFFER,
+      maxItemsPerChunk: RATE_LIMIT_CONFIG.MAX_ITEMS_PER_CHUNK,
+      maxMemoryUsage: RATE_LIMIT_CONFIG.MAX_MEMORY_USAGE,
+      batchSize: RATE_LIMIT_CONFIG.BATCH_SIZE,
+      timeCheckInterval: RATE_LIMIT_CONFIG.TIME_CHECK_INTERVAL,
+      memoryCheckInterval: RATE_LIMIT_CONFIG.MEMORY_CHECK_INTERVAL,
+    });
 
     // Initialize Facebook API
     console.log("Initializing Facebook API...");
@@ -1092,6 +1280,12 @@ async function handler(request: Request) {
         }
     }
 
+    // Log final memory usage
+    const finalMemory = getMemoryUsage();
+    console.log(
+      `🧠 Final memory usage: ${finalMemory.used}MB (${finalMemory.percentage}%)`
+    );
+
     console.log("=== Background job phase completed successfully ===");
     console.log("Phase result:", {
       phase: result?.phase || phase,
@@ -1107,6 +1301,9 @@ async function handler(request: Request) {
       throw new Error(`Phase ${phase} failed: ${result.error}`);
     }
 
+    // Clear timeout handler on success
+    clearTimeout(timeoutHandler);
+
     return Response.json({
       success: true,
       requestId: payload.requestId,
@@ -1114,11 +1311,24 @@ async function handler(request: Request) {
       iteration: currentIteration,
       result,
       timestamp: new Date().toISOString(),
+      memoryUsage: finalMemory,
     });
   } catch (error: any) {
+    // Clear timeout handler on error
+    clearTimeout(timeoutHandler);
+
     console.error("=== Background job failed ===");
     console.error("Error details:", error);
     console.error("Error stack:", error.stack);
+
+    // Log memory usage on error
+    const errorMemory = getMemoryUsage();
+    console.log(
+      `🧠 Memory usage at error: ${errorMemory.used}MB (${errorMemory.percentage}%)`
+    );
+
+    // Force garbage collection on error
+    forceGarbageCollection();
 
     // Try to update job status to failed, but don't fail if we can't parse the request
     try {
@@ -1139,7 +1349,13 @@ async function handler(request: Request) {
         requestId,
         "failed",
         0,
-        (error as any).message
+        (error as any).message,
+        {
+          error: (error as any).message,
+          stack: (error as any).stack,
+          memoryUsage: errorMemory,
+          timestamp: new Date().toISOString(),
+        }
       );
       console.log("Job status updated to failed");
     } catch (updateError) {
@@ -1151,6 +1367,8 @@ async function handler(request: Request) {
         success: false,
         error: (error as any).message || "Unknown error occurred",
         requestId: payload?.requestId || "unknown",
+        memoryUsage: errorMemory,
+        timestamp: new Date().toISOString(),
       },
       { status: 500 }
     );
@@ -1510,6 +1728,57 @@ async function processCampaignsPhase(
         if (await checkJobCancellation(supabase, requestId)) {
           console.log("Job cancelled during campaigns processing");
           return { phase: "campaigns", status: "cancelled" };
+        }
+
+        // Check memory usage periodically
+        if (i % RATE_LIMIT_CONFIG.MEMORY_CHECK_INTERVAL === 0) {
+          const memory = getMemoryUsage();
+          console.log(
+            `🧠 Memory check at campaign ${i}: ${memory.used}MB (${memory.percentage}%)`
+          );
+
+          if (shouldStopForMemory()) {
+            console.log(
+              "🛑 Stopping campaigns processing due to high memory usage"
+            );
+
+            // Get the proper next cursor from the campaigns object
+            let nextCursor = "";
+            try {
+              if (campaigns.hasNext && campaigns.hasNext()) {
+                const paging = campaigns.paging;
+                nextCursor = paging?.cursors?.after || "";
+                console.log(`Got next cursor from paging: ${nextCursor}`);
+              }
+            } catch (cursorError) {
+              console.warn("Could not get next cursor:", cursorError);
+              nextCursor = "";
+            }
+
+            await createFollowUpJob({
+              accountId,
+              timeframe,
+              action: "get24HourData",
+              requestId,
+              phase: "campaigns",
+              after: nextCursor,
+              iteration,
+            });
+
+            return {
+              phase: "campaigns",
+              status: "chunked_memory",
+              processed: i,
+              total: campaigns.length,
+              nextCursor,
+              memoryUsage: memory,
+            };
+          }
+
+          // Force garbage collection every 20 items
+          if (i % 20 === 0 && i > 0) {
+            forceGarbageCollection();
+          }
         }
       }
 
@@ -3350,41 +3619,100 @@ export const POST = verifySignatureAppRouter(handler);
 // NEW: GET endpoint to fix zero spend/impressions issues
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
-    const action = searchParams.get("action");
+    const url = new URL(request.url);
+    const action = url.searchParams.get("action");
 
-    if (action === "cleanup-engagement-metrics") {
-      // Manual cleanup of empty engagement metrics
+    if (action === "health") {
+      // Health check endpoint
+      const memory = getMemoryUsage();
       const supabase = await createClient();
 
-      const cleanupResult = await cleanupEmptyEngagementMetrics(
-        supabase,
-        "manual-cleanup"
-      );
+      // Check recent job statuses
+      const { data: recentJobs, error } = await supabase
+        .from("background_jobs")
+        .select("status, created_at, error_message")
+        .eq("job_type", "meta-marketing-sync")
+        .gte(
+          "created_at",
+          new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+        ) // Last 24 hours
+        .order("created_at", { ascending: false })
+        .limit(10);
 
-      return NextResponse.json({
-        success: true,
-        message: "Cleanup completed",
-        deleted: cleanupResult.deleted,
-        errors: cleanupResult.errors,
+      if (error) {
+        console.error("Error fetching recent jobs:", error);
+      }
+
+      return Response.json({
+        status: "healthy",
+        timestamp: new Date().toISOString(),
+        memory: memory,
+        circuitBreaker: metaApiCircuitBreaker.getStatus(),
+        config: {
+          maxProcessingTime: RATE_LIMIT_CONFIG.MAX_PROCESSING_TIME,
+          safetyBuffer: RATE_LIMIT_CONFIG.SAFETY_BUFFER,
+          maxItemsPerChunk: RATE_LIMIT_CONFIG.MAX_ITEMS_PER_CHUNK,
+          maxMemoryUsage: RATE_LIMIT_CONFIG.MAX_MEMORY_USAGE,
+        },
+        environment: {
+          workerDisabled: process.env.WORKER_DISABLED === "true",
+          globalKillSwitch: process.env.GLOBAL_WORKER_KILL_SWITCH === "true",
+          hasMetaToken: !!process.env.META_ACCESS_TOKEN,
+        },
+        recentJobs: recentJobs || [],
       });
     }
 
-    // Default response for other GET requests
-    return NextResponse.json({
+    if (action === "stats") {
+      // Statistics endpoint
+      const supabase = await createClient();
+
+      const { data: jobStats, error } = await supabase
+        .from("background_jobs")
+        .select("status")
+        .eq("job_type", "meta-marketing-sync")
+        .gte(
+          "created_at",
+          new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+        );
+
+      if (error) {
+        console.error("Error fetching job stats:", error);
+        return Response.json(
+          { error: "Failed to fetch stats" },
+          { status: 500 }
+        );
+      }
+
+      const stats =
+        jobStats?.reduce((acc: any, job: any) => {
+          acc[job.status] = (acc[job.status] || 0) + 1;
+          return acc;
+        }, {}) || {};
+
+      return Response.json({
+        period: "last_24_hours",
+        stats,
+        total: jobStats?.length || 0,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return Response.json({
       message: "Meta Marketing Worker API",
       endpoints: {
-        "POST /": "Process Meta Marketing data with QStash",
-        "GET /?action=cleanup-engagement-metrics":
-          "Clean up empty engagement metrics rows",
+        health: "?action=health",
+        stats: "?action=stats",
       },
+      timestamp: new Date().toISOString(),
     });
-  } catch (error) {
-    console.error("❌ GET request error:", error);
-    return NextResponse.json(
+  } catch (error: any) {
+    console.error("Error in GET endpoint:", error);
+    return Response.json(
       {
         error: "Internal server error",
-        message: error instanceof Error ? error.message : "Unknown error",
+        message: error.message,
+        timestamp: new Date().toISOString(),
       },
       { status: 500 }
     );
