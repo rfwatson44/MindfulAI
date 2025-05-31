@@ -1006,7 +1006,8 @@ async function handler(request: Request) {
           payload.campaignIds || [],
           payload.after || "",
           startTime,
-          currentIteration
+          currentIteration,
+          payload.adsetIds || [] // Pass existing adset IDs from payload
         );
         break;
 
@@ -1794,7 +1795,8 @@ async function processAdsetsPhase(
   campaignIds: string[],
   after: string,
   startTime: number,
-  iteration: number
+  iteration: number,
+  existingAdsetIds: string[] = [] // Add parameter for existing adset IDs
 ) {
   // Check for cancellation at the start
   if (await checkJobCancellation(supabase, requestId)) {
@@ -1804,6 +1806,9 @@ async function processAdsetsPhase(
 
   console.log("=== PROCESSING ADSETS PHASE ===");
   console.log(`Campaign IDs to process: ${campaignIds.length}`);
+  console.log(
+    `Existing adset IDs from previous iterations: ${existingAdsetIds.length}`
+  );
 
   // Process campaigns in batches
   const batchSize = Math.min(RATE_LIMIT_CONFIG.BATCH_SIZE, campaignIds.length);
@@ -1811,7 +1816,8 @@ async function processAdsetsPhase(
   const remainingCampaigns = campaignIds.slice(batchSize);
 
   const processedAdsets = [];
-  const adsetIds = [];
+  // Start with existing adset IDs from previous iterations
+  const adsetIds = [...existingAdsetIds];
   let totalErrors = 0;
 
   // Enhanced fields for comprehensive adset data collection
@@ -1858,6 +1864,7 @@ async function processAdsetsPhase(
         requestId,
         phase: "adsets",
         campaignIds: [...currentBatch.slice(i), ...remainingCampaigns],
+        adsetIds: adsetIds, // Include accumulated adset IDs
         after: "",
         iteration,
       });
@@ -2084,6 +2091,7 @@ async function processAdsetsPhase(
         requestId,
         phase: "adsets",
         campaignIds: remainingCampaigns,
+        adsetIds: adsetIds, // Include accumulated adset IDs
         after: "",
         iteration,
       });
@@ -2144,18 +2152,94 @@ async function processAdsetsPhase(
         },
       });
     }
+  } else if (adsetIds.length > 0) {
+    // All campaigns processed, now transition to ads phase
+    console.log("🎯 ALL CAMPAIGNS PROCESSED - TRANSITIONING TO ADS PHASE");
+    console.log(`Total adset IDs collected: ${adsetIds.length}`);
+
+    try {
+      const followUpResult = await createFollowUpJob({
+        accountId,
+        timeframe,
+        action: "get24HourData",
+        requestId,
+        phase: "ads",
+        adsetIds: adsetIds,
+        after: "",
+        iteration,
+      });
+
+      if (followUpResult) {
+        console.log("✅ Follow-up job created successfully for ads phase");
+        return {
+          processedAdsets: processedAdsets.length,
+          phase: "adsets",
+          after: after,
+          remainingTime: getRemainingTime(startTime),
+          completed: false,
+          hasMoreAdsets: false,
+          transitioningToAds: true,
+          adsetIds: adsetIds.length,
+        };
+      } else {
+        console.log(
+          "🛑 Follow-up job creation was prevented by validation - completing job"
+        );
+        await updateJobStatus(
+          supabase,
+          requestId,
+          "completed",
+          100,
+          undefined,
+          {
+            message:
+              "Job completed - ads phase follow-up prevented by validation",
+            totalPhases: 4,
+            processedAdsets: processedAdsets.length,
+            summary: {
+              totalProcessed: processedAdsets.length,
+              completedAt: new Date().toISOString(),
+              reason:
+                "Ads phase follow-up job validation prevented infinite loop",
+            },
+          }
+        );
+      }
+    } catch (followUpError) {
+      console.error(
+        "❌ Error creating follow-up job for ads phase:",
+        followUpError
+      );
+      console.log("🔄 Completing job due to follow-up job error");
+      await updateJobStatus(supabase, requestId, "completed", 100, undefined, {
+        message: "Job completed due to ads phase follow-up job error",
+        totalPhases: 4,
+        processedAdsets: processedAdsets.length,
+        error:
+          followUpError instanceof Error
+            ? followUpError.message
+            : "Unknown error",
+        summary: {
+          totalProcessed: processedAdsets.length,
+          completedAt: new Date().toISOString(),
+          reason: "Ads phase follow-up job creation failed",
+        },
+      });
+    }
   } else {
-    // All ads processed, mark as completed
-    console.log("🎉 ALL ADS PROCESSED - NO MORE ADSETS REMAINING");
-    console.log(`Total ads processed in this batch: ${processedAdsets.length}`);
+    // No adsets found, complete the job
+    console.log("🎉 NO ADSETS FOUND - COMPLETING JOB");
+    console.log(
+      `Total adsets processed in this batch: ${processedAdsets.length}`
+    );
     await updateJobStatus(supabase, requestId, "completed", 100, undefined, {
-      message: "All phases completed successfully",
+      message: "All phases completed - no adsets found",
       totalPhases: 4,
-      processedAds: processedAdsets.length,
+      processedAdsets: processedAdsets.length,
       summary: {
         totalProcessed: processedAdsets.length,
         completedAt: new Date().toISOString(),
-        reason: "All adsets processed successfully",
+        reason: "No adsets found to process",
       },
     });
   }
